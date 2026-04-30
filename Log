@@ -1,0 +1,15 @@
+Loss stuck at 0.003, Gate activation change ELU to Sigmoid, hope it will converge
+
+The performance is limited by the x-x Conv at the end of the model, try to parametrize it, adding more x-x GConv
+
+With multiple x-x GConv, loss stuck at 0.000534 regardless of size of the network, changing the activation function of head layer from
+ELU to Sigmoid
+
+Try to change activation, allowing it to amplify
+Fix the net work at smallest size, try different activation fuction
+参数化激活函数, 最小网络, 0.0007
+保持参数化, 加大模型, 调整激活函数, 没有收敛到更小的数值
+
+稍大网络, 2层xxConv, 关闭激活参数化
+
+结论一, 和尾部的xxConv密切相关, 其他相同时1层和2层分别收敛至0.0012, 0.000561
