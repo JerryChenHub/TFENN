@@ -2,8 +2,8 @@ FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b3350
 
 ARG MINICONDA_INSTALLER=Miniconda3-py312_26.5.3-2-Linux-x86_64.sh
 ARG MINICONDA_SHA256=37606f9f03ced8ef60f4ffc76b21dda01728eac8a632dcab316c891cea4fe2f5
-ARG OPLS_REPOSITORY=https://github.com/JerryChenHub/OPLS2020_Static.git
 ARG OPLS_REF=a4dbe85edfd25fc9b4c2cf5ac2109f318455f4e1
+ARG OPLS_ARCHIVE_SHA256=e8dcbacc42db5af5f950fc7d62b3fb5cf031bdfc69fff9476bdbfa306bc7f5c3
 
 LABEL org.opencontainers.image.title="TFENN_A"
 LABEL org.opencontainers.image.source="https://github.com/JerryChenHub/TFENN"
@@ -48,9 +48,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /Project
 
-RUN git clone --filter=blob:none "${OPLS_REPOSITORY}" OPLS2020_Static \
-    && git -C /Project/OPLS2020_Static checkout --detach "${OPLS_REF}" \
-    && test "$(git -C /Project/OPLS2020_Static rev-parse HEAD)" = "${OPLS_REF}" \
+RUN curl --fail --location --silent --show-error \
+        --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 \
+        "https://codeload.github.com/JerryChenHub/OPLS2020_Static/tar.gz/${OPLS_REF}" \
+        --output /tmp/opls.tar.gz \
+    && echo "${OPLS_ARCHIVE_SHA256}  /tmp/opls.tar.gz" | sha256sum --check \
+    && mkdir /Project/OPLS2020_Static \
+    && tar --extract --gzip --file /tmp/opls.tar.gz \
+        --strip-components=1 --directory /Project/OPLS2020_Static \
+    && rm /tmp/opls.tar.gz \
     && python -m pip install --no-build-isolation --no-deps --editable /Project/OPLS2020_Static
 
 WORKDIR /Project/TFENN
