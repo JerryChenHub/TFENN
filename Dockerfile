@@ -1,5 +1,4 @@
-# syntax=docker/dockerfile:1
-FROM ubuntu:24.04
+FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 ARG MINICONDA_INSTALLER=Miniconda3-py312_26.5.3-2-Linux-x86_64.sh
 ARG MINICONDA_SHA256=37606f9f03ced8ef60f4ffc76b21dda01728eac8a632dcab316c891cea4fe2f5

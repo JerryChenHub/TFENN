@@ -49,18 +49,20 @@ tests                        数学性质与代码测试
 项目使用已有的 `ml_torch` Conda 环境：
 
 ```powershell
-D:\miniconda3\Scripts\conda.exe run -n ml_torch python -m pip install --no-deps --editable .
-D:\miniconda3\Scripts\conda.exe run -n ml_torch python -m pytest
+conda run -n ml_torch python -m pip install --no-deps --editable .
+conda run -n ml_torch python -m pytest
 ```
 
 实际环境版本记录在 `windows_versions.json`。
+
+数据生成还需要本地安装 `opls2020-static`。Docker 构建会自动检出并安装仓库中固定的 OPLS 提交。
 
 ## 训练
 
 所有网络共用一个训练入口，并通过 `model_name` 选择模型：
 
 ```powershell
-D:\miniconda3\Scripts\conda.exe run -n ml_torch python experiments\benzene_pair\train.py --model_name D6TensorBasisNetV1 --experiment_name first_test
+conda run -n ml_torch python experiments\benzene_pair\train.py --model_name D6TensorBasisNetV1 --experiment_name first_test
 ```
 
 每次实验在 `experiments/benzene_pair/logs` 中写入一个 JSON。日志包含模型结构、数据生成参数、优化器、损失、训练参数、loss 历史、环境版本和完整 144 组 D6 作用的误差。已有同名日志不会被覆盖。
@@ -83,3 +85,14 @@ generate_benzene_pair_dataset("data/benzene_pair/example.csv", config)
 ```
 
 生成器同时写入 `example.csv` 和 `example.json`。JSON 保存精简的生成参数，CSV 只保存训练所需数值。
+
+## Docker
+
+Docker 镜像名使用符合 registry 规则的小写形式 `tfenn_a`：
+
+```bash
+docker build --tag tfenn_a:latest .
+docker run --rm tfenn_a:latest python docker/smoke_test.py
+```
+
+基础镜像固定为 Amazon ECR Public 中的 Docker Official Ubuntu 24.04 digest，避免不同时间构建得到不同基础层。
