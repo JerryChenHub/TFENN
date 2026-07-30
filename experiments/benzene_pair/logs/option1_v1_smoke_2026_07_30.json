@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "experiment_name": "option1_v1_smoke_2026_07_30",
+  "status": "completed",
+  "started_at_utc": "2026_07_30T19_02_33Z",
+  "completed_at_utc": "2026_07_30T19_02_35Z",
+  "model": {
+    "name": "D6TensorBasisNetV1",
+    "structure": {
+      "vector_branch": [
+        "D6VectorLinearV1",
+        "D6VectorNormGateV1",
+        "D6VectorLinearV1",
+        "D6VectorNormGateV1"
+      ],
+      "tensor_branch": [
+        "D6BiTensorLinearV1",
+        "D6BiTensorNormGateV1"
+      ],
+      "tensor_to_vector": "D6TensorToVectorBasisAverageV1",
+      "head": [
+        "D6VectorGroupAverageV1",
+        "D6VectorGroupAverageV1"
+      ]
+    },
+    "parameter_count": 7094,
+    "parameters_requested": {
+      "x_in_channels": 1,
+      "r_in_channels": 1,
+      "x_hidden_channels": 16,
+      "r_hidden_channels": 16,
+      "num_x_layers": 2,
+      "num_r_layers": 1,
+      "r_to_x_channels": 16,
+      "out_channels": 2,
+      "vector_activation": "sigmoid_centered",
+      "matrix_gate": "block_norm",
+      "head_activation": "leaky_relu",
+      "num_head_layers": 2,
+      "head_hidden_channels": 16,
+      "init_policy": "xavier_uniform"
+    },
+    "parameters_used": {
+      "x_in_channels": 1,
+      "r_in_channels": 1,
+      "x_hidden_channels": 16,
+      "r_hidden_channels": 16,
+      "num_x_layers": 2,
+      "num_r_layers": 1,
+      "r_to_x_channels": 16,
+      "out_channels": 2,
+      "vector_activation": "sigmoid_centered",
+      "matrix_gate": "block_norm",
+      "head_activation": "leaky_relu",
+      "num_head_layers": 2,
+      "head_hidden_channels": 16,
+      "init_policy": "xavier_uniform"
+    }
+  },
+  "data": {
+    "path": "data/benzene_pair/Benzene_10000_6.0_10.0_4.0_gamma1.csv",
+    "available_samples": 10000,
+    "selected_samples": 512,
+    "training_samples": 410,
+    "validation_samples": 102,
+    "selected_index_min": 15,
+    "selected_index_max": 9975,
+    "generation_metadata": {
+      "schema_version": 1,
+      "dataset": "benzene_pair",
+      "sample_count": 10000,
+      "seed": null,
+      "distance_range": [
+        6.0,
+        10.0
+      ],
+      "cutoff": 12.0,
+      "min_separation": 4.0,
+      "smoothing": "linear",
+      "target_scale": 1.0,
+      "max_attempts_per_sample": 500,
+      "columns": [
+        "R11",
+        "R12",
+        "R13",
+        "R21",
+        "R22",
+        "R23",
+        "R31",
+        "R32",
+        "R33",
+        "x1",
+        "x2",
+        "x3",
+        "F1",
+        "F2",
+        "F3",
+        "M1",
+        "M2",
+        "M3"
+      ],
+      "parameter_source": "legacy_filename_and_generator_defaults"
+    }
+  },
+  "training": {
+    "seed": 20260730,
+    "optimizer": "AdamW",
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "loss": "SmoothL1Loss",
+    "smooth_l1_beta": 1.0,
+    "epochs": 8,
+    "batch_size": 64,
+    "validation_fraction": 0.2,
+    "history_stride": 1,
+    "duration_seconds": 1.1678367000131402,
+    "loss_history": [
+      {
+        "epoch": 0,
+        "training_loss": 0.0950243466263978,
+        "validation_loss": 0.09648026842106297
+      },
+      {
+        "epoch": 1,
+        "training_loss": 0.006741564393217249,
+        "validation_loss": 0.007271678901241712,
+        "optimization_loss": 0.04317848112666624
+      },
+      {
+        "epoch": 2,
+        "training_loss": 0.010094601874219837,
+        "validation_loss": 0.009814822362352727,
+        "optimization_loss": 0.008143010465151637
+      },
+      {
+        "epoch": 3,
+        "training_loss": 0.0035635623859282895,
+        "validation_loss": 0.0038730866705905236,
+        "optimization_loss": 0.007900524956248461
+      },
+      {
+        "epoch": 4,
+        "training_loss": 0.0032426275344645135,
+        "validation_loss": 0.0036923747080764074,
+        "optimization_loss": 0.002947008037318966
+      },
+      {
+        "epoch": 5,
+        "training_loss": 0.0029191933459878946,
+        "validation_loss": 0.003369067507545565,
+        "optimization_loss": 0.003215094574163567
+      },
+      {
+        "epoch": 6,
+        "training_loss": 0.0024035417647454748,
+        "validation_loss": 0.0028288136097338458,
+        "optimization_loss": 0.0027072210666581552
+      },
+      {
+        "epoch": 7,
+        "training_loss": 0.002539702305418343,
+        "validation_loss": 0.0029603237784295655,
+        "optimization_loss": 0.0025601836578475526
+      },
+      {
+        "epoch": 8,
+        "training_loss": 0.00230497040858673,
+        "validation_loss": 0.0027134341382524644,
+        "optimization_loss": 0.0024236593841762914
+      }
+    ],
+    "initial_training_loss": 0.0950243466263978,
+    "final_training_loss": 0.00230497040858673,
+    "minimum_recorded_training_loss": 0.00230497040858673,
+    "initial_validation_loss": 0.09648026842106297,
+    "final_validation_loss": 0.0027134341382524644,
+    "minimum_recorded_validation_loss": 0.0027134341382524644,
+    "loss_decreased": true,
+    "validation_loss_decreased": true
+  },
+  "symmetry": {
+    "convention": "row_vectors",
+    "group_order": 12,
+    "checked_group_pairs": 144,
+    "checked_samples_per_pair": 2,
+    "joint_max_abs": 6.539907504432563e-16,
+    "joint_max_relative": 5.437982239531863e-15,
+    "left_equivariance_max_abs": 5.915407053080912e-16,
+    "right_invariance_max_abs": 3.694961003830599e-16,
+    "expected_by_design": true,
+    "tolerance": 1e-09,
+    "passed": true
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.13",
+    "torch": "2.13.0+cpu",
+    "numpy": "2.5.1",
+    "device": "cpu",
+    "dtype": "torch.float64",
+    "cuda_available": false,
+    "cuda_runtime": null,
+    "num_threads": 1
+  }
+}
