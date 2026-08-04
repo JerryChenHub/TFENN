@@ -367,11 +367,11 @@ class BenzeneForceModel(nn.Module):
 def compile_models(channels: int) -> dict[str, nn.Module]:
     """Compile shared constants and three independent matched models."""
     generators = benzene_generators()
-    encoder = PoseEncoder(compile_anchors(generators, ranks=(2, 6)))
+    encoder = PoseEncoder(compile_anchors(generators, output_ranks=(2, 6)))
     representation_b = encoder.representation(generators)
-    lift_aa = compile_intertwiners(generators, generators)
-    lift_ba = compile_intertwiners(representation_b, generators)
-    lift_bb = compile_intertwiners(representation_b, representation_b)
+    lift_aa = compile_intertwiners(generators, generators).basis
+    lift_ba = compile_intertwiners(representation_b, generators).basis
+    lift_bb = compile_intertwiners(representation_b, representation_b).basis
     if lift_aa.shape != (2, 3, 3):
         raise RuntimeError("unexpected AA dimension")
     if lift_ba.shape != (4, 3, 18):

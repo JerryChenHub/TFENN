@@ -1,4 +1,76 @@
-"""Cartesian symmetric trace free tensor spaces."""
+"""Canonical Cartesian symmetric trace free spaces and couplings.
+
+Responsibility and major public API
+    This module defines the project tensor convention, the supported rank
+    limit, canonical STF bases, coordinate conversion, vector powers, trace
+    maps, and one bilinear SO(3) coupling channel.  Major public entry points
+    are ``stf_basis``, ``stf_to_dense``, ``dense_to_stf``,
+    ``stf_power_components``, and ``stf_tensor_coupling``.  The normalized
+    symmetric coordinate functions remain available for exact conversion and
+    trace tests, but are not the primary network interface.
+
+Mathematical convention
+    Python uses ``rank`` for the mathematical value ``l`` in the nonnegative
+    integers, with ``d_l = 2 * l + 1``.  The project accepts ranks from zero
+    through ``MAX_STF_RANK`` inclusive.  A normalized symmetric coordinate
+    uses the multi index ``(a, b, c)`` with ``a + b + c = l``.  Ordering scans
+    ``a`` from ``l`` down to zero, then scans ``b`` from the remaining degree
+    down to zero, with ``c`` implied.  Its basis tensor is the equally weighted
+    sum of index words divided by the square root of their multiplicity.
+
+    STF columns are an orthonormal basis of the trace kernel.  Projector
+    columns are scanned in symmetric coordinate order, orthogonalized twice,
+    and signed so the first largest magnitude pivot is positive.  Active
+    column vectors are used.  A rotation maps body frame coordinates to common
+    frame coordinates and obeys ``D_l(R1 @ R2) = D_l(R1) @ D_l(R2)``.
+    The Levi Civita convention is ``epsilon[0, 1, 2] = 1``.  Coupling contracts
+    deltas first, uses that epsilon for odd parity, projects to STF, and applies
+    no additional unitary Clebsch Gordon scale.  Swapping inputs preserves the
+    channel when ``rank_left + rank_right + output_rank`` is even and negates
+    it when that sum is odd.
+
+    Compiler subspaces scan ambient projector columns from first to last and
+    sign the first significant coordinate positively.  Canonical block rank
+    order is increasing.  Pose flattening is anchor major and STF component
+    minor.  These choices together are versioned by
+    ``TENSOR_CONVENTION_VERSION``.  ``STF_BASIS_VERSION`` is a source
+    compatibility alias for the same complete convention.
+
+Shapes and batching
+    ``stf_basis(l)`` has shape ``(comb(l + 2, 2), 2 * l + 1)``.
+    ``trace_matrix(l)`` maps its second axis to symmetric coordinates two ranks
+    lower and has zero rows for rank zero or one.  STF coordinates end in
+    ``2 * l + 1``.  Symmetric coordinates end in ``comb(l + 2, 2)``.  Dense
+    tensors end in ``l`` axes of size three, while rank zero dense tensors are
+    scalars.  ``stf_power_components`` maps ``(..., 3)`` to
+    ``(..., 2 * l + 1)``.  A coupling receives trailing axes
+    ``2 * rank_left + 1`` and ``2 * rank_right + 1``, broadcasts their leading
+    batch axes, and returns ``(..., 2 * output_rank + 1)``.  All conversion and
+    power functions preserve every leading batch axis.
+
+Tensor behavior and determinism
+    Runtime tensors support ``torch.float32`` and ``torch.float64``.  Outputs
+    preserve the resolved dtype and device, and differentiable operations
+    preserve gradients.  Canonical masters are constructed without gradients
+    on CPU in ``torch.float64`` and then cast.  The fixed algorithms and
+    convention version make results reproducible within one supported runtime,
+    but bitwise identity across PyTorch versions, devices, and linear algebra
+    backends is not promised.  Rank validation occurs before any allocation
+    whose size contains ``3 ** rank``.
+
+Exceptions
+    ``TypeError`` reports unsupported tensors and dtypes.  ``ValueError``
+    reports invalid ranks, trailing shapes, devices, broadcast shapes, or
+    angular momentum channels.  ``RuntimeError`` reports failure to construct
+    the required canonical STF basis.
+
+Mapped references
+    Leon Lang, Maurice Weiler, A Wigner Eckart Theorem for Group Equivariant
+    Convolution Kernels, https://openreview.net/forum?id=ajOrOhQOsYx
+    Risi Kondor, Zhen Lin, Shubhendu Trivedi, Clebsch Gordon Nets, a Fully
+    Fourier Space Spherical Convolutional Neural Network,
+    https://proceedings.neurips.cc/paper/2018/hash/a3fc981af450752046be179185ebc8b5
+"""
 
 from __future__ import annotations
 
@@ -11,10 +83,10 @@ from torch import Tensor
 
 
 __all__ = [
+    "MAX_STF_RANK",
     "STF_BASIS_VERSION",
+    "TENSOR_CONVENTION_VERSION",
     "dense_to_stf",
-    "dense_to_symmetric",
-    "project_symmetric",
     "stf_basis",
     "stf_dimension",
     "stf_power_components",
@@ -22,27 +94,32 @@ __all__ = [
     "stf_tensor_coupling",
     "stf_to_dense",
     "stf_to_symmetric",
-    "symmetric_dimension",
-    "symmetric_multi_indices",
-    "symmetric_power_components",
-    "symmetric_to_dense",
     "symmetric_to_stf",
     "trace_matrix",
 ]
 
 
-STF_BASIS_VERSION = "cartesian-stf-v1"
+MAX_STF_RANK = 10
+TENSOR_CONVENTION_VERSION = "tfenn_tensor_convention_v2"
+STF_BASIS_VERSION = TENSOR_CONVENTION_VERSION
+
+
+_assume_constant_result = torch.compiler.assume_constant_result
 
 
 def _validate_rank(rank: int) -> None:
-    """Require a nonnegative integer rank."""
+    """Require one supported nonnegative integer rank."""
     if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
         raise ValueError(f"rank must be a nonnegative integer, got {rank!r}")
+    if rank > MAX_STF_RANK:
+        raise ValueError(
+            f"rank {rank} exceeds MAX_STF_RANK {MAX_STF_RANK} before allocation"
+        )
 
 
 def _resolve_dtype(dtype: torch.dtype | None) -> torch.dtype:
     """Resolve and validate a real floating dtype."""
-    result = dtype or torch.get_default_dtype()
+    result = torch.get_default_dtype() if dtype is None else dtype
     if result not in (torch.float32, torch.float64):
         raise TypeError("dtype must be torch.float32 or torch.float64")
     return result
@@ -79,6 +156,7 @@ def _symmetric_multi_indices_master(
     )
 
 
+@_assume_constant_result
 def symmetric_multi_indices(rank: int) -> tuple[tuple[int, int, int], ...]:
     """Return rank three multi indices in fixed lexicographic order."""
     _validate_rank(rank)
@@ -98,7 +176,7 @@ def stf_dimension(rank: int) -> int:
 
 
 @lru_cache(maxsize=None)
-def _multiplicity(rank: int, alpha: tuple[int, int, int]) -> int:
+def _multiplicity_master(rank: int, alpha: tuple[int, int, int]) -> int:
     """Count index words represented by a multi index."""
     result = math.factorial(rank)
     for count in alpha:
@@ -106,7 +184,14 @@ def _multiplicity(rank: int, alpha: tuple[int, int, int]) -> int:
     return result
 
 
+@_assume_constant_result
+def _multiplicity(rank: int, alpha: tuple[int, int, int]) -> int:
+    """Return one cached multi index multiplicity."""
+    return _multiplicity_master(rank, alpha)
+
+
 @lru_cache(maxsize=None)
+@_assume_constant_result
 def _trace_matrix_master(rank: int) -> Tensor:
     """Build the canonical trace map on CPU in double precision."""
     high = symmetric_multi_indices(rank)
@@ -141,6 +226,7 @@ def trace_matrix(
 
 
 @lru_cache(maxsize=None)
+@_assume_constant_result
 def _stf_basis_master(rank: int) -> Tensor:
     """Build the canonical STF basis on CPU in double precision."""
     size = symmetric_dimension(rank)
@@ -177,6 +263,7 @@ def _stf_basis_master(rank: int) -> Tensor:
     return torch.stack(columns, dim=1)
 
 
+@_assume_constant_result
 def stf_basis(
     rank: int,
     *,
@@ -211,6 +298,7 @@ def project_symmetric(components: Tensor, rank: int) -> Tensor:
 
 
 @lru_cache(maxsize=None)
+@_assume_constant_result
 def _dense_symmetric_basis_master(rank: int) -> Tensor:
     """Build the dense symmetric basis on CPU in double precision."""
     indices = symmetric_multi_indices(rank)
@@ -282,7 +370,7 @@ def symmetric_power_components(vector: Tensor, rank: int) -> Tensor:
 
     values = []
     for alpha in symmetric_multi_indices(rank):
-        value = torch.ones_like(vector[..., 0])
+        value = vector[..., 0] * 0.0 + 1.0
         for axis, power in enumerate(alpha):
             if power:
                 value = value * vector[..., axis].pow(power)
@@ -312,6 +400,7 @@ def stf_symmetric_product(
 
 
 @lru_cache(maxsize=1)
+@_assume_constant_result
 def _levi_civita_master() -> Tensor:
     """Build the Cartesian Levi Civita tensor on CPU."""
     epsilon = torch.zeros((3, 3, 3), dtype=torch.float64)
@@ -436,7 +525,7 @@ def _coupling_coefficients_master(
 
 
 @lru_cache(maxsize=None)
-def _coupling_coefficients(
+def _coupling_coefficients_cached(
     rank_left: int,
     rank_right: int,
     output_rank: int,
@@ -446,6 +535,24 @@ def _coupling_coefficients(
     """Return cached coupling coefficients after a master cast."""
     return _coupling_coefficients_master(rank_left, rank_right, output_rank).to(
         dtype=dtype, device=device
+    )
+
+
+@_assume_constant_result
+def _coupling_coefficients(
+    rank_left: int,
+    rank_right: int,
+    output_rank: int,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> Tensor:
+    """Return cached coupling coefficients as a graph constant."""
+    return _coupling_coefficients_cached(
+        rank_left,
+        rank_right,
+        output_rank,
+        dtype,
+        device,
     )
 
 

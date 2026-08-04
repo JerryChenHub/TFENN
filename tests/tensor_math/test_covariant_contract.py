@@ -98,7 +98,7 @@ def test_covariants_reject_nonfinite_inputs(
         pose_block[0, 0] = value
 
     with pytest.raises(ValueError, match="finite"):
-        function(position, pose_block, 2)
+        function(position, pose_block, 2, validate_finite=True)
 
 
 @pytest.mark.parametrize("function", (scalar_contraction, vector_covariant))
@@ -109,9 +109,9 @@ def test_covariants_reject_invalid_shapes(function: object) -> None:
 
     with pytest.raises(ValueError, match="trailing shape"):
         function(torch.ones(2, dtype=torch.float64), pose_block, 2)
-    with pytest.raises(ValueError, match="pose_block must have shape"):
+    with pytest.raises(ValueError, match="expected trailing shape"):
         function(position, torch.ones((4, 2), dtype=torch.float64), 2)
-    with pytest.raises(ValueError, match="at least one anchor"):
+    with pytest.raises(ValueError, match="positive m_l"):
         function(position, torch.empty((5, 0), dtype=torch.float64), 2)
 
 

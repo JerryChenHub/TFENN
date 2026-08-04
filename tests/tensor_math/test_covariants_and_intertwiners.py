@@ -119,7 +119,12 @@ def test_q_covariance_and_full_rotation_gradient_chain(
 
 def _assert_intertwiner_space(rho_in: Tensor, rho_out: Tensor) -> Tensor:
     """Compile and validate one full linear intertwiner basis."""
-    basis = compile_intertwiners(rho_in, rho_out, tolerance=1e-9)
+    result = compile_intertwiners(
+        rho_in,
+        rho_out,
+        nullspace_atol=1e-9,
+    )
+    basis = result.basis
     assert basis.shape[0] > 0
     assert intertwiner_residual(basis, rho_in, rho_out).item() < ATOL
     flattened = basis.reshape(basis.shape[0], -1)
@@ -179,3 +184,8 @@ def test_intertwiner_compiler_rejects_invalid_representations() -> None:
     nonfinite[0, 0, 0] = float("nan")
     with pytest.raises(ValueError, match="only finite values"):
         compile_intertwiners(nonfinite, nonfinite)
+
+    with pytest.raises(TypeError, match="torch.Tensor"):
+        a_representation(None)
+    with pytest.raises(ValueError, match="trailing shape"):
+        a_representation(torch.eye(2, dtype=DTYPE))

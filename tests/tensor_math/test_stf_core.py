@@ -12,18 +12,22 @@ from TFENN.tensor_math import (
     project_symmetric,
     stf_basis,
     stf_dimension,
+    stf_power_components,
     stf_representation,
     stf_symmetric_product,
     stf_tensor_coupling,
     stf_to_dense,
     stf_to_symmetric,
     symmetric_dimension,
+    symmetric_power_components,
     symmetric_representation,
     symmetric_to_stf,
     trace_matrix,
 )
 from TFENN.tensor_math.stf_space import (
+    MAX_STF_RANK,
     STF_BASIS_VERSION,
+    TENSOR_CONVENTION_VERSION,
     _stf_tensor_coupling_reference,
 )
 
@@ -71,7 +75,8 @@ def test_stf_basis_is_an_exact_cast_of_the_master(rank: int) -> None:
     master = stf_basis(rank, dtype=torch.float64, device="cpu")
     single = stf_basis(rank, dtype=torch.float32, device="cpu")
     torch.testing.assert_close(single, master.float(), atol=0.0, rtol=0.0)
-    assert STF_BASIS_VERSION == "cartesian-stf-v1"
+    assert STF_BASIS_VERSION == TENSOR_CONVENTION_VERSION
+    assert TENSOR_CONVENTION_VERSION == "tfenn_tensor_convention_v2"
 
 
 def test_default_dtype_does_not_change_stf_coordinates() -> None:
@@ -85,6 +90,49 @@ def test_default_dtype_does_not_change_stf_coordinates() -> None:
     finally:
         torch.set_default_dtype(original)
     torch.testing.assert_close(single, double.float(), atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize("invalid_dtype", (False, 0))
+def test_explicit_invalid_dtype_never_uses_the_default(invalid_dtype: object) -> None:
+    """Check false values cannot masquerade as an omitted dtype."""
+    with pytest.raises(TypeError, match="dtype"):
+        stf_basis(2, dtype=invalid_dtype)
+
+
+def test_rank_zero_runtime_outputs_keep_zero_derivative_graphs() -> None:
+    """Check constant rank zero formulas remain connected to their inputs."""
+    generator = torch.Generator().manual_seed(19)
+    vector = torch.randn(
+        (3,), dtype=DTYPE, generator=generator, requires_grad=True
+    )
+    matrix = torch.randn(
+        (3, 3), dtype=DTYPE, generator=generator, requires_grad=True
+    )
+    symmetric_power = symmetric_power_components(vector, 0)
+    stf_power = stf_power_components(vector, 0)
+    symmetric_action = symmetric_representation(matrix, 0)
+    stf_action = stf_representation(matrix, 0)
+    for value in (symmetric_power, stf_power, symmetric_action, stf_action):
+        assert value.requires_grad
+
+    vector_gradient = torch.autograd.grad(
+        symmetric_power.sum() + stf_power.sum(),
+        vector,
+    )[0]
+    matrix_gradient = torch.autograd.grad(
+        symmetric_action.sum() + stf_action.sum(),
+        matrix,
+    )[0]
+    torch.testing.assert_close(vector_gradient, torch.zeros_like(vector))
+    torch.testing.assert_close(matrix_gradient, torch.zeros_like(matrix))
+    assert torch.autograd.gradcheck(
+        lambda value: stf_power_components(value, 0),
+        (vector,),
+    )
+    assert torch.autograd.gradcheck(
+        lambda value: stf_representation(value, 0),
+        (matrix,),
+    )
 
 
 def test_public_stf_basis_cannot_mutate_the_master() -> None:
@@ -300,7 +348,7 @@ def test_stf_representation_rejects_unsupported_matrix_actions(
 ) -> None:
     """Check only proper orthogonal actions enter the STF representation."""
     with pytest.raises(ValueError, match=message):
-        stf_representation(matrix, 2)
+        stf_representation(matrix, 2, validate=True)
 
 
 @pytest.mark.parametrize("invalid", (float("nan"), float("inf")))
@@ -309,7 +357,7 @@ def test_stf_representation_rejects_nonfinite_matrices(invalid: float) -> None:
     matrix = torch.eye(3, dtype=DTYPE)
     matrix[0, 0] = invalid
     with pytest.raises(ValueError, match="finite"):
-        stf_representation(matrix, 2)
+        stf_representation(matrix, 2, validate=True)
 
 
 def test_rotation_validation_tolerance_is_explicit() -> None:
@@ -317,8 +365,14 @@ def test_rotation_validation_tolerance_is_explicit() -> None:
     matrix = torch.eye(3, dtype=DTYPE)
     matrix[0, 0] += 2e-8
     with pytest.raises(ValueError, match="orthogonal"):
-        stf_representation(matrix, 2)
-    represented = stf_representation(matrix, 2, rotation_atol=5e-8, rotation_rtol=5e-8)
+        stf_representation(matrix, 2, validate=True)
+    represented = stf_representation(
+        matrix,
+        2,
+        validate=True,
+        rotation_atol=5e-8,
+        rotation_rtol=5e-8,
+    )
     assert torch.isfinite(represented).all()
 
 
@@ -365,6 +419,47 @@ def test_rank_one_coupling_has_cartesian_golden_normalization(
         atol=tolerance,
         rtol=tolerance,
     )
+
+
+@pytest.mark.parametrize(
+    ("rank_left", "rank_right", "output_rank"),
+    ((1, 1, 0), (1, 1, 1), (2, 3, 1), (2, 3, 4), (3, 4, 5)),
+)
+def test_coupling_swap_phase_is_frozen(
+    rank_left: int,
+    rank_right: int,
+    output_rank: int,
+) -> None:
+    """Check the documented exchange phase for representative channels."""
+    generator = torch.Generator().manual_seed(
+        307 + 31 * rank_left + 7 * rank_right + output_rank
+    )
+    left = torch.randn(
+        stf_dimension(rank_left), dtype=DTYPE, generator=generator
+    )
+    right = torch.randn(
+        stf_dimension(rank_right), dtype=DTYPE, generator=generator
+    )
+    forward = stf_tensor_coupling(
+        left, right, rank_left, rank_right, output_rank
+    )
+    reverse = stf_tensor_coupling(
+        right, left, rank_right, rank_left, output_rank
+    )
+    phase = (-1.0) ** (rank_left + rank_right - output_rank)
+    torch.testing.assert_close(forward, phase * reverse, atol=ATOL, rtol=RTOL)
+
+
+def test_project_rank_limit_fails_before_dense_allocation() -> None:
+    """Check unsupported ranks fail before an exponential dense tensor exists."""
+    unsupported = MAX_STF_RANK + 1
+    with pytest.raises(ValueError, match="before allocation"):
+        stf_basis(unsupported)
+    with pytest.raises(ValueError, match="before allocation"):
+        stf_to_dense(
+            torch.empty(2 * unsupported + 1, dtype=DTYPE),
+            unsupported,
+        )
 
 
 @pytest.mark.parametrize(

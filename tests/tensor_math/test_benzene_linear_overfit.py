@@ -146,11 +146,11 @@ class BenzeneLinearForceSmoke(nn.Module):
 def _compile_model() -> tuple[BenzeneLinearForceSmoke, Tensor, Tensor]:
     """Compile D6 anchors and all linear bases used by the smoke model."""
     generators = _benzene_generators()
-    encoder = PoseEncoder(compile_anchors(generators, ranks=(2, 6)))
+    encoder = PoseEncoder(compile_anchors(generators, output_ranks=(2, 6)))
     representation_b = encoder.representation(generators)
-    lift_aa = compile_intertwiners(generators, generators)
-    lift_ba = compile_intertwiners(representation_b, generators)
-    lift_bb = compile_intertwiners(representation_b, representation_b)
+    lift_aa = compile_intertwiners(generators, generators).basis
+    lift_ba = compile_intertwiners(representation_b, generators).basis
+    lift_bb = compile_intertwiners(representation_b, representation_b).basis
     assert lift_aa.shape == (2, 3, 3)
     assert lift_ba.shape == (4, 3, 18)
     assert lift_bb.shape == (30, 18, 18)

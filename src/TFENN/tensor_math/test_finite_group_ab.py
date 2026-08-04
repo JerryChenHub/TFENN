@@ -225,7 +225,7 @@ class CompiledCase:
 
 
 def _compile_case(case: GroupCase) -> CompiledCase:
-    compilation = compile_anchors(case.generators, ranks=(2, 6))
+    compilation = compile_anchors(case.generators, output_ranks=(2, 6))
     encoder = PoseEncoder(compilation)
     rho_a = case.generators
     rho_b = encoder.representation(case.generators)
@@ -239,7 +239,6 @@ def _compile_case(case: GroupCase) -> CompiledCase:
         name: compile_intertwiners(
             rho_in,
             rho_out,
-            return_compilation=True,
         )
         for name, (rho_in, rho_out) in lift_specs.items()
     }
@@ -535,7 +534,7 @@ def test_anchor_compiler_against_full_group_reynolds_oracle(
 def test_slow_c60_rank10_is_generated_from_rank6() -> None:
     """The rank-10 I-invariant exists but is not a new primitive anchor."""
     case = _make_group_case("c60")
-    compilation = compile_anchors(case.generators, ranks=(6, 10))
+    compilation = compile_anchors(case.generators, output_ranks=(6, 10))
     rank_ten = compilation.blocks[10]
     assert rank_ten.dimensions.fixed == 1
     assert rank_ten.dimensions.generated == 1
@@ -577,7 +576,7 @@ def test_generic_cyclic_groups_have_no_hardcoded_group_path(order: int) -> None:
     group = _group_closure(generators)
     assert group.shape[0] == order
 
-    compilation = compile_anchors(generators, ranks=(1, 2, 3))
+    compilation = compile_anchors(generators, output_ranks=(1, 2, 3))
     for rank, block in compilation.blocks.items():
         reynolds = stf_representation(group, rank).mean(dim=0)
         fixed_projector = block.fixed_basis @ block.fixed_basis.mT
@@ -594,7 +593,6 @@ def test_generic_cyclic_groups_have_no_hardcoded_group_path(order: int) -> None:
     lift = compile_intertwiners(
         generators,
         rho_b_generators,
-        return_compilation=True,
     )
     assert lift.dimension == _character_hom_dimension(group, rho_b_group)
     assert lift.residual < 5.0e-8
@@ -800,7 +798,9 @@ def test_covariant_gradients_are_finite_on_a_compact_edge_domain(
             strict_same_edge=False,
         )
         assert bool(torch.isfinite(values).all())
-        assert float(torch.linalg.vector_norm(values, dim=-1).amax()) < 1.0e4
+        assert float(
+            torch.linalg.vector_norm(values, dim=-1).amax().detach()
+        ) < 1.0e4
         jacobian_probe = torch.autograd.grad(values.square().sum(), positions)[0]
         assert bool(torch.isfinite(jacobian_probe).all())
         assert float(torch.linalg.vector_norm(jacobian_probe)) < 1.0e6
@@ -1125,4 +1125,4 @@ def test_tiny_edge_ab_has_finite_gradients_and_one_optimizer_step(
     )
     new_loss = torch.nn.functional.mse_loss(new_prediction, target)
     assert bool(torch.isfinite(new_loss))
-    assert float(new_loss) < old_loss
+    assert float(new_loss.detach()) < old_loss

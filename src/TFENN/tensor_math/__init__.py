@@ -8,16 +8,21 @@ from .anchor_compiler import (
 )
 from .covariants import scalar_contraction, vector_covariant
 from .intertwiner_compiler import (
+    BilinearIntertwinerCompilation,
     IntertwinerCompilation,
     a_representation,
+    compile_bilinear_intertwiners,
     compile_intertwiners,
     direct_sum_representation,
     intertwiner_residual,
+    tensor_product_representation,
 )
 from .pose_encoding import PoseEncoder
-from .stf_rep import stf_representation, symmetric_representation
+from .stf_rep import stf_representation, symmetric_representation, validate_rotation
 from .stf_space import (
+    MAX_STF_RANK,
     STF_BASIS_VERSION,
+    TENSOR_CONVENTION_VERSION,
     dense_to_stf,
     dense_to_symmetric,
     project_symmetric,
@@ -41,11 +46,15 @@ __all__ = [
     "AnchorBlock",
     "AnchorCompilation",
     "AnchorDimensions",
+    "BilinearIntertwinerCompilation",
     "IntertwinerCompilation",
+    "MAX_STF_RANK",
     "PoseEncoder",
     "STF_BASIS_VERSION",
+    "TENSOR_CONVENTION_VERSION",
     "a_representation",
     "compile_anchors",
+    "compile_bilinear_intertwiners",
     "compile_intertwiners",
     "dense_to_stf",
     "dense_to_symmetric",
@@ -67,6 +76,8 @@ __all__ = [
     "symmetric_representation",
     "symmetric_to_dense",
     "symmetric_to_stf",
+    "tensor_product_representation",
     "trace_matrix",
+    "validate_rotation",
     "vector_covariant",
 ]

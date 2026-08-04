@@ -57,7 +57,7 @@ def _assert_point_permutations(points: Tensor, generators: Tensor) -> None:
 
 def _assert_pose_law(generators: Tensor, rank: int, dimension: int) -> None:
     """Check the molecular generators compile the requested pose law."""
-    compilation = compile_anchors(generators, ranks=(rank,))
+    compilation = compile_anchors(generators, output_ranks=(rank,))
     encoder = PoseEncoder(compilation)
     pose = rotation((0.19, -0.31, 0.23))
     left = generators[1] @ generators[0]
