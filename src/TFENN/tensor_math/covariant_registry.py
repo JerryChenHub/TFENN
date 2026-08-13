@@ -73,6 +73,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
+from .anchor_compiler import AnchorCompilation
 from .intertwiner_compiler import (
     IntertwinerCompilation,
     compile_intertwiners,
@@ -103,6 +104,7 @@ __all__ = [
     "TypeBlock",
     "TypeCatalog",
     "TypeKey",
+    "build_primitive_b_manifest",
     "build_type_catalog",
     "compile_covariant_basis",
     "encode_typed_blocks",
@@ -471,6 +473,33 @@ class BBlockManifest:
     def key(self) -> TypeKey:
         """Return the stable typed key declared by this manifest."""
         return TypeKey("B", self.component)
+
+
+def build_primitive_b_manifest(
+    compilation: AnchorCompilation,
+) -> tuple[BBlockManifest, ...]:
+    """Build typed B blocks from every discovered primitive anchor rank."""
+    if not isinstance(compilation, AnchorCompilation):
+        raise TypeError("compilation must be an AnchorCompilation")
+    manifests: list[BBlockManifest] = []
+    for component, rank in enumerate(compilation.output_ranks):
+        multiplicity = compilation.dimensions[rank].primitive
+        if multiplicity <= 0:
+            raise RuntimeError("discovered primitive rank has no anchor channels")
+        manifests.append(
+            BBlockManifest(
+                component=component,
+                stf_rank=rank,
+                anchor_columns=tuple(range(multiplicity)),
+                anchor_multiplicity=multiplicity,
+                stable_component_id=f"primitive_rank_{rank}",
+                metadata={
+                    "source": "AnchorCompilation",
+                    "requested_output_ranks": compilation.requested_output_ranks,
+                },
+            )
+        )
+    return tuple(manifests)
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)

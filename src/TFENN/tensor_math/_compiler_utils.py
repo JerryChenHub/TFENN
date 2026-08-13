@@ -24,6 +24,9 @@ Determinism and exceptions
     Canonical projector scanning removes arbitrary singular vector phases and
     rotations for a fixed numerical subspace.  Rank decisions can still vary
     near the threshold across PyTorch versions and linear algebra backends.
+    Reduced SVD is the primary solver.  If its singular vectors fail to
+    converge, singular values retain the same rank rule and a symmetric Gram
+    eigensolve recovers the known nullspace dimension before canonicalization.
     The records expose the spectral gap, threshold margin, residual, and
     singular values so callers can reject unstable artifacts.  A stable rank
     decision requires its threshold margin to be at least one half of the
@@ -223,14 +226,49 @@ def canonical_nullspace(
             numerical_rank=0,
         )
 
-    _, singular_values, right_vectors_h = torch.linalg.svd(work, full_matrices=False)
-    threshold = singular_threshold(singular_values, resolved_atol, resolved_rtol)
-    numerical_rank = int((singular_values > threshold).sum().item())
-    dimension = columns - numerical_rank
-    right_range = right_vectors_h[:numerical_rank].T
-    projector = torch.eye(columns, dtype=torch.float64)
-    if numerical_rank:
-        projector = projector - right_range @ right_range.T
+    try:
+        _, singular_values, right_vectors_h = torch.linalg.svd(
+            work,
+            full_matrices=False,
+        )
+        threshold = singular_threshold(
+            singular_values,
+            resolved_atol,
+            resolved_rtol,
+        )
+        numerical_rank = int((singular_values > threshold).sum().item())
+        dimension = columns - numerical_rank
+        right_range = right_vectors_h[:numerical_rank].T
+        projector = torch.eye(columns, dtype=torch.float64)
+        if numerical_rank:
+            projector = projector - right_range @ right_range.T
+    except torch.linalg.LinAlgError as vector_error:
+        try:
+            singular_values = torch.linalg.svdvals(work)
+            threshold = singular_threshold(
+                singular_values,
+                resolved_atol,
+                resolved_rtol,
+            )
+            numerical_rank = int((singular_values > threshold).sum().item())
+            dimension = columns - numerical_rank
+            if dimension:
+                gram = work.T @ work
+                _, eigenvectors = torch.linalg.eigh(gram)
+                null_range = eigenvectors[:, :dimension]
+                projector = null_range @ null_range.T
+            else:
+                projector = torch.zeros(
+                    (columns, columns),
+                    dtype=torch.float64,
+                )
+        except torch.linalg.LinAlgError as fallback_error:
+            raise RuntimeError(
+                "nullspace singular vector and Gram solvers failed: "
+                f"actual shape ({rows}, {columns}), "
+                f"expected shape ({columns}, nullity), "
+                f"singular vector error {vector_error}"
+            ) from fallback_error
     projector = 0.5 * (projector + projector.T)
     basis = _canonical_range(projector, dimension)
 

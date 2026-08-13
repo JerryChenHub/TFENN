@@ -2,8 +2,8 @@ FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b3350
 
 ARG MINICONDA_INSTALLER=Miniconda3-py312_26.5.3-2-Linux-x86_64.sh
 ARG MINICONDA_SHA256=37606f9f03ced8ef60f4ffc76b21dda01728eac8a632dcab316c891cea4fe2f5
-ARG OPLS_REF=a4dbe85edfd25fc9b4c2cf5ac2109f318455f4e1
-ARG OPLS_ARCHIVE_SHA256=e8dcbacc42db5af5f950fc7d62b3fb5cf031bdfc69fff9476bdbfa306bc7f5c3
+ARG OPLS_REF=319521f5551782c7f9016a51f84225578e583068
+ARG OPLS_ARCHIVE_SHA256=352f29c867de33aa22926d9d8117c2ce26c4c4f023d7360303982bf7eea8fc89
 
 LABEL org.opencontainers.image.title="TFENN_A"
 LABEL org.opencontainers.image.source="https://github.com/JerryChenHub/TFENN"

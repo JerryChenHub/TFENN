@@ -1,5 +1,5 @@
 {
-  "recorded_date": "2026_07_30",
+  "recorded_date": "2026_08_10",
   "environment": "ml_torch",
   "tfenn": "0.1.0_editable",
   "platform": "Windows_11_10.0.26200_SP0",
@@ -17,9 +17,28 @@
   "cuda_available": false,
   "cuda_runtime": null,
   "opls2020_static": {
-    "version": "0.2.0",
-    "branch": "2026_April",
-    "commit": "a4dbe85edfd25fc9b4c2cf5ac2109f318455f4e1",
-    "source_type": "editable_local_checkout"
+    "version": "2.0.0",
+    "runtime_version": "2.0.0",
+    "distribution_version": "2.0.0",
+    "result_schema_version": "2.0.0",
+    "source_status": "local_dirty_candidate",
+    "source_type": "editable_local_checkout",
+    "direct_url": {
+      "dir_info": {
+        "editable": true
+      },
+      "url": "file:///C:/Users/Lenovo/Desktop/Rimoli/Research/OPLS2020_Static"
+    },
+    "code_provenance": {
+      "git_commit": "319521f5551782c7f9016a51f84225578e583068",
+      "git_dirty": true,
+      "source_tree_sha256": "1190ba588aa2bdf2ae8a60b894b1456ca64c34e0ddeeb6852b1c91113c92c2b8"
+    },
+    "code_provenance_source": "opls2020.io_with_editable_git_fallback"
+  },
+  "windows_openmp": {
+    "require_opls_torch_process_isolation": true,
+    "torch_runtime_sha256": "ee527c978999653eb18edc3ef372b4e95d4ad9a7691b6d08817be9d38c7d0a02",
+    "conda_mkl_runtime_sha256": "3e69ef3e52deff22ba0e44c36e1198dcae1657098e63a2d550842b717eb59175"
   }
 }

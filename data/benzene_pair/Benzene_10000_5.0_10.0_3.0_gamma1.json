@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "format": "legacy_pair_wide",
   "dataset": "benzene_pair",
   "sample_count": 10000,
   "seed": null,
@@ -32,5 +33,23 @@
     "M2",
     "M3"
   ],
-  "parameter_source": "legacy_filename_and_generator_defaults"
+  "opls": {
+    "package_version": "0.2.0",
+    "version_provenance": "inferred_from_generator",
+    "source_commit": "a4dbe85edfd25fc9b4c2cf5ac2109f318455f4e1",
+    "model": "legacy_open_shifted_force_linear_12_A",
+    "geometry_profile": "legacy_project_v1"
+  },
+  "conventions": {
+    "rotation": "active_second_body_to_first_body_frame",
+    "displacement": "second_center_in_first_body_frame",
+    "force": "force_on_first_molecule_in_first_body_frame",
+    "moment": "torque_on_first_molecule_about_its_center_in_first_body_frame",
+    "position_unit": "angstrom",
+    "force_unit": "kcal_per_mol_per_angstrom",
+    "moment_unit": "kcal_per_mol"
+  },
+  "parameter_source": "legacy_filename_and_generator_defaults",
+  "original_filename": "Benzene_10000_5.0_10.0_3.0_gamma1.csv",
+  "csv_sha256": "b9ec1484604ba58c11461e749322d147fc9888320b054157c8e2e7a06560a83d"
 }

@@ -22,10 +22,14 @@ venv/
 *.ckpt
 *.pt
 *.pth
+*.partial
 /temp/
 /logs/
 /cometml_runs/
 /Log
+/Archive/
+/tmp/
+/.legacy/
 
 build/
 dist/

@@ -14,7 +14,7 @@ from TFENN.tensor_math import (
     build_type_catalog,
 )
 
-from ._groups import benzene_generators, methane_generators
+from ._groups import benzene_generators, c60_generators, methane_generators
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,13 @@ def methane_covariant_case() -> CovariantCase:
     return CovariantCase("methane", build_type_catalog(system, manifest), manifest)
 
 
+def c60_covariant_case() -> CovariantCase:
+    """Return the rotational icosahedral catalog with primitive rank six B."""
+    system = GeneratorSystem(("fivefold", "threefold"), c60_generators())
+    manifest = (BBlockManifest(0, 6, (0,), 1, "c60_b_rank_6"),)
+    return CovariantCase("c60", build_type_catalog(system, manifest), manifest)
+
+
 def transformed_inputs(
     inputs: dict[str, torch.Tensor],
     slot_keys: dict[str, TypeKey],
@@ -58,4 +65,3 @@ def transformed_inputs(
             action = block.actions[generator_index] @ action
         result[name] = value @ action.T
     return result
-

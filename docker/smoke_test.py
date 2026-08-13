@@ -9,18 +9,6 @@ import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_COLUMNS = [
-    *(f"R{i}{j}" for i in range(1, 4) for j in range(1, 4)),
-    "x1",
-    "x2",
-    "x3",
-    "F1",
-    "F2",
-    "F3",
-    "M1",
-    "M2",
-    "M3",
-]
 
 
 def check_source_syntax() -> int:
@@ -39,46 +27,64 @@ def check_source_syntax() -> int:
 
 
 def check_data() -> tuple[int, int]:
-    from TFENN.data import load_benzene_pair_csv
+    from TFENN.data import load_benzene_cluster_csv
 
-    paths = sorted((PROJECT_ROOT / "data" / "benzene_pair").glob("*.csv"))
-    if not paths:
-        raise AssertionError("No experiment data files were found")
-    for path in paths:
-        arrays = load_benzene_pair_csv(path)
-        if len(arrays) != 10_000:
-            raise AssertionError(f"Unexpected sample count in {path.name}")
-    return len(paths), len(EXPECTED_COLUMNS)
+    path = PROJECT_ROOT / "data" / "benzene_pair" / "benzene_pair_opls_2_0_0_v1.csv"
+    arrays = load_benzene_cluster_csv(path)
+    if len(arrays) != 1_000 or arrays.molecule_count != 2:
+        raise AssertionError(f"Unexpected dataset shape in {path.name}")
+    return len(arrays), arrays.molecule_count
 
 
 def check_model() -> tuple[int, ...]:
     import torch
 
-    from TFENN.models import D6TensorBasisNetV1
+    from TFENN.models import (
+        PairPipelineConfig,
+        StageConfig,
+        build_invariant_gate_pipeline,
+    )
 
     torch.set_default_dtype(torch.float64)
-    model = D6TensorBasisNetV1(
-        x_hidden_channels=4,
-        r_hidden_channels=4,
-        num_x_layers=1,
-        num_r_layers=1,
-        r_to_x_channels=4,
-        out_channels=2,
-        num_head_layers=1,
-        head_hidden_channels=4,
+    root_three_over_two = 3.0**0.5 / 2.0
+    generators = torch.tensor(
+        (
+            (
+                (0.5, -root_three_over_two, 0.0),
+                (root_three_over_two, 0.5, 0.0),
+                (0.0, 0.0, 1.0),
+            ),
+            ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0)),
+        )
     )
-    x = torch.randn(3, 3)
-    rotation = torch.linalg.qr(torch.randn(3, 3, 3)).Q
-    negative = torch.linalg.det(rotation) < 0
-    rotation[negative, :, -1] *= -1
-    output = model(x, rotation)
-    if output.shape != (3, 2, 3):
+    config = PairPipelineConfig(
+        stages=(
+            StageConfig("a1", "A", ("x",), 2, lift_orders=(1,)),
+            StageConfig("b1", "B", ("r",), 2, lift_orders=(1,)),
+            StageConfig("a2", "A", ("a1", "b1"), 1, lift_orders=(1,)),
+        ),
+        output_stage="a2",
+        anchor_ranks=(1, 2),
+    )
+    model = build_invariant_gate_pipeline(
+        generators,
+        config,
+        generator_names=("sixfold", "twofold"),
+    )
+    centers = torch.randn(3, 2, 3)
+    frames = torch.eye(3).expand(3, 2, 3, 3).clone()
+    output = model(centers, frames)
+    if output.shape != (3, 3):
         raise AssertionError(f"Unexpected model output shape: {tuple(output.shape)}")
     if not torch.isfinite(output).all():
         raise AssertionError("Model output contains nonfinite values")
     output.square().mean().backward()
-    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
-    if not gradients or not all(torch.isfinite(gradient).all() for gradient in gradients):
+    gradients = [
+        parameter.grad for parameter in model.parameters() if parameter.grad is not None
+    ]
+    if not gradients or not all(
+        torch.isfinite(gradient).all() for gradient in gradients
+    ):
         raise AssertionError("Model gradients are missing or nonfinite")
     return tuple(output.shape)
 
@@ -87,29 +93,56 @@ def check_opls() -> tuple[tuple[int, ...], tuple[int, ...]]:
     import numpy as np
 
     from TFENN.data import BenzenePairGenerationConfig, sample_benzene_pair
-    from opls2020.core.force_field import OPLS2020_Force_Field
-    from opls2020.core.molecule import Benzene
-
-    molecule_a = Benzene()
-    molecule_b = Benzene()
-    parameters_a = molecule_a.opls_params[molecule_a._atom_types[0]]
-    parameters_b = molecule_b.opls_params[molecule_b._atom_types[0]]
-    force_field = OPLS2020_Force_Field(cutoff=12.0, smoothing="linear")
-    force = force_field.Non_bond_Force(
-        molecule_a.atom_position[0],
-        parameters_a,
-        molecule_b.atom_position[0] + np.array([5.0, 0.0, 0.0]),
-        parameters_b,
+    from opls2020 import (
+        MoleculeInstance,
+        Pose,
+        StaticEngine,
+        SystemSpec,
+        __version__,
+        benzene,
     )
-    if force.shape != (3,) or not np.isfinite(force).all():
-        raise AssertionError("OPLS compatibility force is invalid")
+
+    if __version__ != "1.0.0":
+        raise AssertionError(f"Unexpected OPLS version: {__version__}")
+    species = benzene()
+    system = SystemSpec(
+        configuration_id="tfenn_docker_smoke",
+        species={species.species_id: species},
+        molecules=(
+            MoleculeInstance("benzene_0001", species.species_id, Pose()),
+            MoleculeInstance(
+                "benzene_0002",
+                species.species_id,
+                Pose(center_A=(8.0, 0.0, 0.0)),
+            ),
+        ),
+    )
+    result = StaticEngine(use_neighbor_list=False).evaluate(system)
+    if (
+        result.model.model_semantics_id
+        != "opls2020_open_direct_quintic_10_12_codata2022_v1"
+    ):
+        raise AssertionError("Unexpected OPLS model semantics")
+    if result.molecular_forces_kcal_mol_A.shape != (2, 3):
+        raise AssertionError("Unexpected OPLS molecular force shape")
+    if result.molecular_torques_kcal_mol.shape != (2, 3):
+        raise AssertionError("Unexpected OPLS molecular torque shape")
+    result_arrays = (
+        result.molecular_forces_kcal_mol_A,
+        result.molecular_torques_kcal_mol,
+        result.virial_kcal_mol,
+    )
+    if not all(np.isfinite(array).all() for array in result_arrays):
+        raise AssertionError("OPLS result contains nonfinite values")
+    if not np.allclose(result.total_force, 0.0, atol=1.0e-12, rtol=0.0):
+        raise AssertionError("OPLS total force is not conserved")
 
     rotation, displacement, net_force, net_moment = sample_benzene_pair(
         np.random.default_rng(7),
         BenzenePairGenerationConfig(
             sample_count=1,
-            distance_range=(6.5, 6.6),
-            min_separation=0.0,
+            distance_range_A=(6.5, 6.6),
+            min_interatomic_distance_A=0.0,
         ),
     )
     arrays = (rotation, displacement, net_force, net_moment)
