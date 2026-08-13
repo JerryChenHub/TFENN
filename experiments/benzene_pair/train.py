@@ -25,14 +25,10 @@ from torch import Tensor, nn
 
 from TFENN.data import load_benzene_cluster_csv, load_benzene_cluster_metadata
 from TFENN.models import (
-    InvariantGatePipeline,
     InvariantGatePipelineV2,
     InvariantGatePipelineV2Config,
-    PairPipelineConfig,
-    build_invariant_gate_pipeline,
     build_invariant_gate_pipeline_v2,
     default_invariant_gate_pipeline_v2_config,
-    default_pair_pipeline_config,
 )
 
 
@@ -56,8 +52,6 @@ HISTORY_FIELDS = (
     *(f"train_{name}" for name in METRIC_NAMES),
     *(f"validation_{name}" for name in METRIC_NAMES),
 )
-PipelineConfig = PairPipelineConfig | InvariantGatePipelineV2Config
-PipelineModel = InvariantGatePipeline | InvariantGatePipelineV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +108,10 @@ class TrainingConfig:
     threads: int = 1
     symmetry_tolerance: float = 1.0e-4
     progress_every: int = 10
-    pipeline: PipelineConfig = field(
+    pipeline: InvariantGatePipelineV2Config = field(
         default_factory=default_invariant_gate_pipeline_v2_config
     )
-    dataset_revision: int | None = 3
+    dataset_revision: int = 3
     zero_output_heads: bool = False
     maximum_train_loss_ratio: float = 0.1
     overwrite: bool = False
@@ -152,17 +146,14 @@ class TrainingConfig:
             raise ValueError("progress_every must be positive")
         if not math.isfinite(self.symmetry_tolerance) or self.symmetry_tolerance <= 0.0:
             raise ValueError("symmetry_tolerance must be finite and positive")
-        if not isinstance(
-            self.pipeline,
-            (PairPipelineConfig, InvariantGatePipelineV2Config),
-        ):
-            raise TypeError("pipeline must be a supported pipeline config")
-        if self.dataset_revision is not None and (
+        if not isinstance(self.pipeline, InvariantGatePipelineV2Config):
+            raise TypeError("pipeline must be an InvariantGatePipelineV2Config")
+        if (
             not isinstance(self.dataset_revision, Integral)
             or isinstance(self.dataset_revision, bool)
             or self.dataset_revision < 1
         ):
-            raise ValueError("dataset_revision must be a positive integer or null")
+            raise ValueError("dataset_revision must be a positive integer")
         if not isinstance(self.zero_output_heads, bool):
             raise TypeError("zero_output_heads must be bool")
         if (
@@ -183,8 +174,6 @@ class TrainingConfig:
     @property
     def pipeline_version(self) -> str:
         """Return the stable serialized version for the configured network."""
-        if isinstance(self.pipeline, PairPipelineConfig):
-            return "v1"
         return "v2"
 
     @classmethod
@@ -204,32 +193,14 @@ class TrainingConfig:
 
         pipeline_value = value.get("pipeline")
         pipeline_version = value.get("pipeline_version")
-        if pipeline_version not in (None, "v1", "v2"):
-            raise ValueError("pipeline_version must be v1 or v2")
+        if pipeline_version not in (None, "v2"):
+            raise ValueError("pipeline_version must be v2")
         if pipeline_value is None:
-            pipeline = (
-                default_pair_pipeline_config()
-                if pipeline_version == "v1"
-                else defaults.pipeline
-            )
+            pipeline = defaults.pipeline
         else:
             if not isinstance(pipeline_value, Mapping):
                 raise TypeError("pipeline must be a mapping")
-            if pipeline_version is None:
-                stages = pipeline_value.get("stages")
-                first_stage = stages[0] if isinstance(stages, list) and stages else {}
-                pipeline_version = (
-                    "v2"
-                    if isinstance(first_stage, Mapping)
-                    and "source_names" in first_stage
-                    else "v1"
-                )
-            if pipeline_version == "v1":
-                pipeline = PairPipelineConfig.from_dict(pipeline_value)
-            elif pipeline_version == "v2":
-                pipeline = InvariantGatePipelineV2Config.from_dict(pipeline_value)
-            else:
-                raise ValueError("pipeline_version must be v1 or v2")
+            pipeline = InvariantGatePipelineV2Config.from_dict(pipeline_value)
         return cls(
             csv_path=path_value("csv_path", defaults.csv_path),
             output_directory=path_value(
@@ -260,14 +231,7 @@ class TrainingConfig:
             ),
             progress_every=value.get("progress_every", defaults.progress_every),
             pipeline=pipeline,
-            dataset_revision=value.get(
-                "dataset_revision",
-                (
-                    None
-                    if isinstance(pipeline, PairPipelineConfig)
-                    else defaults.dataset_revision
-                ),
-            ),
+            dataset_revision=value.get("dataset_revision", defaults.dataset_revision),
             zero_output_heads=value.get(
                 "zero_output_heads",
                 defaults.zero_output_heads,
@@ -520,10 +484,7 @@ def load_training_data(config: TrainingConfig) -> PairTrainingData:
         raise ValueError("benzene pair training requires two molecules")
     if metadata.get("schema_version") != 2:
         raise ValueError("training requires schema_version two")
-    if (
-        config.dataset_revision is not None
-        and metadata.get("dataset_revision") != config.dataset_revision
-    ):
+    if metadata.get("dataset_revision") != config.dataset_revision:
         raise ValueError(
             "training data revision does not match the configured dataset_revision"
         )
@@ -575,21 +536,14 @@ def _proper_d6_generators() -> Tensor:
     return torch.stack((sixfold, twofold))
 
 
-def _build_model(config: TrainingConfig) -> tuple[PipelineModel, int]:
+def _build_model(config: TrainingConfig) -> tuple[InvariantGatePipelineV2, int]:
     generators = _proper_d6_generators()
     generator_names = ("sixfold", "twofold")
-    if isinstance(config.pipeline, PairPipelineConfig):
-        model = build_invariant_gate_pipeline(
-            generators,
-            config.pipeline,
-            generator_names=generator_names,
-        )
-    else:
-        model = build_invariant_gate_pipeline_v2(
-            generators,
-            config.pipeline,
-            generator_names=generator_names,
-        )
+    model = build_invariant_gate_pipeline_v2(
+        generators,
+        config.pipeline,
+        generator_names=generator_names,
+    )
     model = model.to(
         device=torch.device(config.device),
         dtype=_resolve_dtype(config.dtype),
@@ -610,7 +564,7 @@ def load_trained_model(
     *,
     device: str = "cpu",
     dtype: str = "float32",
-) -> tuple[PipelineModel, float, dict[str, Any]]:
+) -> tuple[InvariantGatePipelineV2, float, dict[str, Any]]:
     """Recompile fixed tensors and restore only learned checkpoint parameters."""
     payload = torch.load(
         Path(checkpoint_path),
@@ -740,16 +694,12 @@ def _save_checkpoint(
     return path
 
 
-def _model_manifest(model: PipelineModel) -> list[dict[str, Any]]:
-    """Return the version specific compiled path audit as plain JSON data."""
-    if isinstance(model, InvariantGatePipeline):
-        return list(model.gate_manifest)
+def _model_manifest(model: InvariantGatePipelineV2) -> list[dict[str, Any]]:
+    """Return the compiled path audit as plain JSON data."""
     return list(model.candidate_manifest)
 
 
-def _model_builder_name(model: PipelineModel) -> str:
-    if isinstance(model, InvariantGatePipeline):
-        return "build_invariant_gate_pipeline"
+def _model_builder_name(model: InvariantGatePipelineV2) -> str:
     return "build_invariant_gate_pipeline_v2"
 
 
@@ -1242,16 +1192,7 @@ def run_training(config: TrainingConfig) -> dict[str, Any]:
             "class": type(model).__name__,
             "pipeline": config.pipeline.as_dict(),
             "compiled_path_manifest": _model_manifest(model),
-            "gate_manifest": (
-                list(model.gate_manifest)
-                if isinstance(model, InvariantGatePipeline)
-                else []
-            ),
-            "candidate_manifest": (
-                list(model.candidate_manifest)
-                if isinstance(model, InvariantGatePipelineV2)
-                else []
-            ),
+            "candidate_manifest": list(model.candidate_manifest),
             "offline_compilation": model.offline_compilation_summary,
             "checkpoint_content": "learned_parameters_only",
             "proper_d6_generator_names": ["sixfold", "twofold"],

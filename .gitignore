@@ -30,6 +30,7 @@ venv/
 /Archive/
 /tmp/
 /.legacy/
+/experiments/**/runs/
 
 build/
 dist/

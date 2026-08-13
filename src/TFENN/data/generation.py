@@ -17,7 +17,6 @@ from urllib.parse import unquote, urlparse
 import numpy as np
 
 from .benzene_cluster import BENZENE_CLUSTER_COLUMNS
-from .benzene_pair import load_benzene_pair_csv
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,134 +609,6 @@ def generate_benzene_triple_dataset(
     return generate_benzene_cluster_dataset(output_csv, config, **kwargs)
 
 
-def compare_legacy_pair_rows(
-    legacy_csv: str | Path,
-    output_json: str | Path,
-    *,
-    row_count: int = 3,
-) -> Path:
-    if row_count < 1:
-        raise ValueError("row_count must be positive.")
-    legacy_path = Path(legacy_csv)
-    arrays = load_benzene_pair_csv(legacy_path)
-    if row_count > len(arrays):
-        raise ValueError("row_count exceeds the legacy dataset size.")
-
-    context = _OplsContext()
-    rows: list[dict[str, Any]] = []
-    new_data_rows: list[tuple[Any, ...]] = []
-    for row_index in range(row_count):
-        centers = np.stack((np.zeros(3), arrays.displacement[row_index]))
-        rotations = np.stack((np.eye(3), arrays.relative_rotation[row_index]))
-        result = context.evaluate(
-            centers,
-            rotations,
-            f"legacy_pose_{row_index:08d}",
-            None,
-        )
-        old_force = arrays.force[row_index]
-        old_moment = arrays.moment[row_index]
-        new_force = np.asarray(result.molecular_forces_kcal_mol_A[0])
-        new_moment = np.asarray(result.molecular_torques_kcal_mol[0])
-        all_forces = np.asarray(result.molecular_forces_kcal_mol_A)
-        all_moments = np.asarray(result.molecular_torques_kcal_mol)
-        for molecule_index in range(2):
-            new_data_rows.append(
-                (
-                    row_index,
-                    molecule_index,
-                    *centers[molecule_index],
-                    *rotations[molecule_index].reshape(9),
-                    *all_forces[molecule_index],
-                    *all_moments[molecule_index],
-                )
-            )
-        force_delta = new_force - old_force
-        moment_delta = new_moment - old_moment
-        old_force_norm = float(np.linalg.norm(old_force))
-        old_moment_norm = float(np.linalg.norm(old_moment))
-        force_delta_norm = float(np.linalg.norm(force_delta))
-        moment_delta_norm = float(np.linalg.norm(moment_delta))
-        rows.append(
-            {
-                "row_index": row_index,
-                "relative_center_A": centers[1].tolist(),
-                "relative_rotation": rotations[1].tolist(),
-                "old_force_kcal_mol_A": old_force.tolist(),
-                "new_force_kcal_mol_A": new_force.tolist(),
-                "force_delta_kcal_mol_A": force_delta.tolist(),
-                "old_force_norm": old_force_norm,
-                "new_force_norm": float(np.linalg.norm(new_force)),
-                "force_delta_norm": force_delta_norm,
-                "force_relative_delta": (
-                    force_delta_norm / old_force_norm if old_force_norm else None
-                ),
-                "old_moment_kcal_mol": old_moment.tolist(),
-                "new_moment_kcal_mol": new_moment.tolist(),
-                "moment_delta_kcal_mol": moment_delta.tolist(),
-                "old_moment_norm": old_moment_norm,
-                "new_moment_norm": float(np.linalg.norm(new_moment)),
-                "moment_delta_norm": moment_delta_norm,
-                "moment_relative_delta": (
-                    moment_delta_norm / old_moment_norm if old_moment_norm else None
-                ),
-                "new_total_energy_kcal_mol": float(result.total_energy_kcal_mol),
-            }
-        )
-
-    def statistics(key: str) -> dict[str, float | None]:
-        values = np.asarray([row[key] for row in rows if row[key] is not None])
-        if values.size == 0:
-            return {"minimum": None, "mean": None, "maximum": None}
-        return {
-            "minimum": float(values.min()),
-            "mean": float(values.mean()),
-            "maximum": float(values.max()),
-        }
-
-    output_path = Path(output_json)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    new_data_path = output_path.with_name(f"{output_path.stem}_new_data.csv")
-    with new_data_path.open("w", newline="", encoding="utf_8") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(BENZENE_CLUSTER_COLUMNS)
-        writer.writerows(new_data_rows)
-
-    new_opls = _opls_provenance(context)
-    comparison = {
-        "schema_name": "tfenn_opls_same_pose_comparison",
-        "schema_version": 1,
-        "legacy_csv": str(legacy_path.as_posix()),
-        "legacy_csv_sha256": _sha256(legacy_path),
-        "new_data_csv": str(new_data_path.as_posix()),
-        "new_data_csv_sha256": _sha256(new_data_path),
-        "legacy_opls": {
-            "package_version": "0.2.0",
-            "version_provenance": "inferred_from_generator",
-            "model": "legacy_open_shifted_force_linear_12_A",
-            "geometry_profile": "legacy_project_v1",
-        },
-        "new_opls": new_opls,
-        "comparison_note": (
-            "Relative centers and rotations are identical. "
-            f"The OPLS {new_opls['runtime_version']} default benzene geometry "
-            "and model semantics are used."
-        ),
-        "summary": {
-            "force_delta_norm": statistics("force_delta_norm"),
-            "force_relative_delta": statistics("force_relative_delta"),
-            "moment_delta_norm": statistics("moment_delta_norm"),
-            "moment_relative_delta": statistics("moment_relative_delta"),
-        },
-        "rows": rows,
-    }
-    output_path.write_text(
-        json.dumps(comparison, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf_8",
-    )
-    return output_path
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -756,24 +627,11 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--max_attempts_per_sample", type=int, default=500)
     generate.add_argument("--workers", type=int, default=1)
 
-    compare = subparsers.add_parser("compare")
-    compare.add_argument("legacy_csv", type=Path)
-    compare.add_argument("output_json", type=Path)
-    compare.add_argument("--row_count", type=int, default=3)
     return parser
 
 
 def main() -> None:
     arguments = _build_parser().parse_args()
-    if arguments.command == "compare":
-        output_path = compare_legacy_pair_rows(
-            arguments.legacy_csv,
-            arguments.output_json,
-            row_count=arguments.row_count,
-        )
-        print(output_path)
-        return
-
     config = BenzeneClusterGenerationConfig(
         sample_count=arguments.sample_count,
         dataset_revision=arguments.dataset_revision,

@@ -22,7 +22,7 @@ from experiments.benzene_pair.train import (
     write_history_csv,
     write_summary_json,
 )
-from TFENN.models import InvariantGatePipelineV2Config, PairPipelineConfig, StageConfig
+from TFENN.models import InvariantGatePipelineV2Config, InvariantGateStageV2Config
 
 
 def test_create_split_is_deterministic_disjoint_and_complete() -> None:
@@ -50,35 +50,7 @@ def test_create_split_is_deterministic_disjoint_and_complete() -> None:
     ) == (10, 5, 5)
 
 
-def test_legacy_v1_training_config_round_trip() -> None:
-    config_path = (
-        Path(__file__).resolve().parents[2]
-        / "experiments"
-        / "benzene_pair"
-        / "config.json"
-    )
-    payload = json.loads(config_path.read_text(encoding="utf_8"))
-    config = TrainingConfig.from_dict(payload)
-    assert config.epochs == 500
-    assert config.csv_path.name == "benzene_pair_opls_2_0_0_v1.csv"
-    assert config.pipeline_version == "v1"
-    assert config.dataset_revision is None
-    assert isinstance(config.pipeline, PairPipelineConfig)
-    assert tuple(stage.name for stage in config.pipeline.stages) == (
-        "a1",
-        "a2",
-        "b2",
-        "a3",
-    )
-    assert config.pipeline.stages[2].inputs == ("a2", "r")
-    assert config.pipeline.stages[0].mlp.hidden_widths == (32,)
-    legacy_defaults = TrainingConfig.from_dict({"pipeline_version": "v1"})
-    assert legacy_defaults.pipeline_version == "v1"
-    assert isinstance(legacy_defaults.pipeline, PairPipelineConfig)
-    assert legacy_defaults.dataset_revision is None
-
-
-def test_default_v2_training_config_round_trip() -> None:
+def test_default_training_config_round_trip() -> None:
     config_path = (
         Path(__file__).resolve().parents[2]
         / "experiments"
@@ -175,13 +147,24 @@ def test_history_and_summary_round_trip(tmp_path) -> None:
 
 
 def test_checkpoint_stores_only_learned_parameters(tmp_path) -> None:
-    pipeline = PairPipelineConfig(
+    pipeline = InvariantGatePipelineV2Config(
         stages=(
-            StageConfig("b1", "B", ("r",), 2, lift_orders=(1,)),
-            StageConfig("a1", "A", ("x", "b1"), 1, lift_orders=(1,)),
+            InvariantGateStageV2Config(
+                "readout",
+                "A",
+                ("x", "r"),
+                1,
+                trunk_width=8,
+                include_symmetric_unary=False,
+                include_raw_mixed_pairs=True,
+                include_stf_shortcuts=True,
+            ),
         ),
-        output_stage="a1",
+        output_stage="readout",
         anchor_ranks=(1, 2),
+        max_constraint_entries=2_000_000,
+        max_gate_coefficients=100_000,
+        max_invariant_channels=10_000,
     )
     config = TrainingConfig(
         pipeline=pipeline,
