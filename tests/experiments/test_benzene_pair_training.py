@@ -76,6 +76,8 @@ def test_default_training_config_round_trip() -> None:
     assert serialized["pipeline_version"] == "v2"
     assert serialized["dataset_revision"] == 3
     assert build_parser().parse_args([]).config.name == "config_v2.json"
+    assert build_parser().parse_args([]).device is None
+    assert build_parser().parse_args(("--device", "cuda")).device == "cuda"
 
 
 def test_regression_metrics_report_physical_and_relative_accuracy() -> None:
@@ -178,6 +180,7 @@ def test_checkpoint_stores_only_learned_parameters(tmp_path) -> None:
     )
     frames = torch.eye(3, dtype=torch.float64).expand(1, 2, 3, 3).clone()
     expected = model(centers, frames)
+    expected_normalization = model.normalization_state_dict()
     checkpoint = _save_checkpoint(
         tmp_path / "model.pt",
         model,
@@ -192,9 +195,17 @@ def test_checkpoint_stores_only_learned_parameters(tmp_path) -> None:
     assert set(payload["parameter_state_dict"]) == {
         name for name, _parameter in model.named_parameters()
     }
+    assert set(payload["normalization_state_dict"]) == set(expected_normalization)
+    for name, value in expected_normalization.items():
+        torch.testing.assert_close(payload["normalization_state_dict"][name], value)
     restored, target_scale, _payload = load_trained_model(
         checkpoint,
         dtype="float64",
     )
+    restored.eval()
+    model.eval()
     torch.testing.assert_close(restored(centers, frames), expected)
+    restored_normalization = restored.normalization_state_dict()
+    for name, value in expected_normalization.items():
+        torch.testing.assert_close(restored_normalization[name], value)
     assert target_scale == 2.0

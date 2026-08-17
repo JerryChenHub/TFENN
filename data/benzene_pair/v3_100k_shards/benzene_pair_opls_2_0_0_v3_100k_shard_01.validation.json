@@ -1,0 +1,170 @@
+{
+  "schema_name": "tfenn_benzene_pair_data_validation",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-13T21:34:52.701502+00:00",
+  "csv_path": "D:\\Python\\Projects\\TFENN\\data\\benzene_pair\\v3_100k_shards\\benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
+  "metadata_path": "D:\\Python\\Projects\\TFENN\\data\\benzene_pair\\v3_100k_shards\\benzene_pair_opls_2_0_0_v3_100k_shard_01.json",
+  "csv_sha256": "bf2968a01fe8740fdd650b52dc244d68369d1afb93cc20848b76f8c1d3a588eb",
+  "metadata_sha256": "87b3ad30cb5efd242ff46ebf53ceb3a688a068428fbdfd28ea97927bb52022fa",
+  "opls_distribution_version": "2.0.0",
+  "passed": true,
+  "checks": {
+    "sample_count": true,
+    "molecule_count": true,
+    "metadata_sample_count": true,
+    "metadata_molecule_count": true,
+    "csv_sha256": true,
+    "opls_runtime_version": true,
+    "finite": true,
+    "root_center": true,
+    "root_rotation": true,
+    "rotation_orthogonality": true,
+    "rotation_determinant": true,
+    "distance_range": true,
+    "minimum_atomic_distance": true,
+    "force_conservation": true,
+    "angular_conservation": true,
+    "unique_poses": true,
+    "nonzero_force_targets": true,
+    "force_norm_health": true,
+    "moment_norm_health": true,
+    "opls_force_recompute": true,
+    "opls_moment_recompute": true
+  },
+  "statistics": {
+    "sample_count": 100000,
+    "unique_pose_count": 100000,
+    "center_distance_A": {
+      "p0": 4.500146213941836,
+      "p1": 4.704210696218462,
+      "p50": 6.372329720465514,
+      "p95": 6.947330331633272,
+      "p99": 6.989996187157794,
+      "p100": 6.99999746727474
+    },
+    "minimum_atomic_distance_A": {
+      "p0": 3.2000144132001407,
+      "p1": 3.2092098048542828,
+      "p50": 3.7811615260987033,
+      "p95": 5.031988462363184,
+      "p99": 5.65181001385307,
+      "p100": 6.798465984126281
+    },
+    "force_norm_kcal_mol_A": {
+      "p0": 0.027542866074867122,
+      "p1": 0.14402403485118404,
+      "p50": 0.5981261321485308,
+      "p95": 1.20376417286849,
+      "p99": 1.339081039604894,
+      "p100": 1.633488095378327
+    },
+    "moment_norm_kcal_mol": {
+      "p0": 0.0010744588416342555,
+      "p1": 0.05368533255732251,
+      "p50": 0.4499655375236048,
+      "p95": 1.3020916274279233,
+      "p99": 1.714446881639043,
+      "p100": 2.1729119897343203
+    },
+    "maximum_root_center_error": 0.0,
+    "maximum_root_rotation_error": 0.0,
+    "maximum_rotation_orthogonality_error": 1.6653345369377348e-15,
+    "maximum_rotation_determinant_error": 1.5543122344752192e-15,
+    "maximum_total_force_norm": 2.5152126513126464e-15,
+    "maximum_total_angular_norm": 4.9790903402258384e-15
+  },
+  "recomputed": {
+    "sample_count": 16,
+    "maximum_force_error": 4.440892098500626e-16,
+    "maximum_moment_error": 6.800116025829084e-16,
+    "records": [
+      {
+        "sample_index": 0,
+        "maximum_force_error": 1.1102230246251565e-16,
+        "maximum_moment_error": 2.7755575615628914e-16
+      },
+      {
+        "sample_index": 6666,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 3.3306690738754696e-16
+      },
+      {
+        "sample_index": 13333,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 3.3306690738754696e-16
+      },
+      {
+        "sample_index": 19999,
+        "maximum_force_error": 4.440892098500626e-16,
+        "maximum_moment_error": 5.551115123125783e-16
+      },
+      {
+        "sample_index": 26666,
+        "maximum_force_error": 1.942890293094024e-16,
+        "maximum_moment_error": 2.220446049250313e-16
+      },
+      {
+        "sample_index": 33333,
+        "maximum_force_error": 3.3306690738754696e-16,
+        "maximum_moment_error": 3.3306690738754696e-16
+      },
+      {
+        "sample_index": 39999,
+        "maximum_force_error": 3.885780586188048e-16,
+        "maximum_moment_error": 6.800116025829084e-16
+      },
+      {
+        "sample_index": 46666,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 2.7755575615628914e-16
+      },
+      {
+        "sample_index": 53332,
+        "maximum_force_error": 1.3877787807814457e-16,
+        "maximum_moment_error": 2.914335439641036e-16
+      },
+      {
+        "sample_index": 59999,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 3.3306690738754696e-16
+      },
+      {
+        "sample_index": 66666,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 1.1102230246251565e-16
+      },
+      {
+        "sample_index": 73332,
+        "maximum_force_error": 1.6653345369377348e-16,
+        "maximum_moment_error": 3.885780586188048e-16
+      },
+      {
+        "sample_index": 79999,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 9.71445146547012e-17
+      },
+      {
+        "sample_index": 86665,
+        "maximum_force_error": 2.220446049250313e-16,
+        "maximum_moment_error": 4.440892098500626e-16
+      },
+      {
+        "sample_index": 93332,
+        "maximum_force_error": 3.3306690738754696e-16,
+        "maximum_moment_error": 4.440892098500626e-16
+      },
+      {
+        "sample_index": 99999,
+        "maximum_force_error": 1.1102230246251565e-16,
+        "maximum_moment_error": 3.3306690738754696e-16
+      }
+    ]
+  },
+  "thresholds": {
+    "expected_sample_count": 100000,
+    "numerical_tolerance": 1e-10,
+    "recompute_count": 16,
+    "max_force_norm_kcal_mol_A": 3.0,
+    "max_moment_norm_kcal_mol": 4.0
+  }
+}

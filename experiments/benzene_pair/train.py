@@ -598,6 +598,10 @@ def load_trained_model(
             if not isinstance(value, Tensor) or value.shape != parameter.shape:
                 raise ValueError(f"checkpoint parameter {name} has an invalid shape")
             parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+    normalization = payload.get("normalization_state_dict")
+    if not isinstance(normalization, Mapping):
+        raise ValueError("checkpoint normalization state is missing")
+    model.load_normalization_state_dict(normalization)
     target_scale = float(payload["target_scale"])
     return model, target_scale, payload
 
@@ -687,6 +691,7 @@ def _save_checkpoint(
             name: parameter.detach().cpu()
             for name, parameter in model.named_parameters()
         },
+        "normalization_state_dict": model.normalization_state_dict(),
     }
     partial_path = path.with_name(f"{path.name}.partial")
     torch.save(payload, partial_path)
@@ -1194,7 +1199,9 @@ def run_training(config: TrainingConfig) -> dict[str, Any]:
             "compiled_path_manifest": _model_manifest(model),
             "candidate_manifest": list(model.candidate_manifest),
             "offline_compilation": model.offline_compilation_summary,
-            "checkpoint_content": "learned_parameters_only",
+            "checkpoint_content": (
+                "learned parameters and nontrainable running RMS state only"
+            ),
             "proper_d6_generator_names": ["sixfold", "twofold"],
             "proper_d6_generator_dtype": "float64",
             "zeroed_output_head_count": zeroed_output_head_count,
@@ -1275,6 +1282,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -1288,6 +1296,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         changes["output_directory"] = parsed.output_directory
     if parsed.epochs is not None:
         changes["epochs"] = parsed.epochs
+    if parsed.device is not None:
+        changes["device"] = parsed.device
     if parsed.overwrite:
         changes["overwrite"] = True
     if changes:

@@ -176,11 +176,13 @@ def one_stage_config(
 @pytest.fixture(scope="module")
 def network() -> InvariantGatePipelineV2:
     torch.manual_seed(20260813)
-    return build_invariant_gate_pipeline_v2(
+    model = build_invariant_gate_pipeline_v2(
         d3_generators(),
         compact_config(),
         generator_names=("threefold", "twofold"),
     )
+    model.eval()
+    return model
 
 
 def _raw_snapshot(debug: object) -> dict[str, dict[TypeKey, Tensor]]:
@@ -535,6 +537,87 @@ def test_parameters_are_auditable_and_compiled_assets_are_buffers(
     assert reduced.trainable_parameter_count < network.trainable_parameter_count
 
 
+def test_running_rms_preserves_scalar_magnitude_and_freezes_in_eval(
+    network: InvariantGatePipelineV2,
+) -> None:
+    original_state = network.normalization_state_dict()
+    was_training = network.training
+    try:
+        network.reset_normalization_stats()
+        network.train()
+        values = torch.tensor(((1.0,), (2.0,), (4.0,)), dtype=DTYPE)
+        normalized = network._normalize_schema(values, "hidden", 0)
+        expected_rms = math.sqrt(7.0 + network.config.radial.rms_epsilon)
+        torch.testing.assert_close(normalized, values / expected_rms)
+        assert normalized[1, 0] == pytest.approx(2.0 * normalized[0, 0])
+        assert normalized[2, 0] == pytest.approx(4.0 * normalized[0, 0])
+
+        network._normalize_schema(torch.tensor(((8.0,),), dtype=DTYPE), "hidden", 0)
+        trained_state = network.normalization_state_dict()
+        assert trained_state["hidden.0.mean_square"].item() == pytest.approx(21.25)
+        assert trained_state["hidden.0.sample_count"].item() == 4
+
+        network.eval()
+        evaluated = network._normalize_schema(
+            torch.tensor(((16.0,),), dtype=DTYPE), "hidden", 0
+        )
+        expected_eval_rms = math.sqrt(21.25 + network.config.radial.rms_epsilon)
+        torch.testing.assert_close(
+            evaluated, evaluated.new_tensor(((16.0 / expected_eval_rms,),))
+        )
+        frozen_state = network.normalization_state_dict()
+        assert frozen_state.keys() == trained_state.keys()
+        for key in frozen_state:
+            torch.testing.assert_close(frozen_state[key], trained_state[key])
+    finally:
+        network.load_normalization_state_dict(original_state)
+        network.train(was_training)
+
+
+def test_normalization_state_is_nontrainable_compact_and_restorable(
+    network: InvariantGatePipelineV2,
+) -> None:
+    original_state = network.normalization_state_dict()
+    was_training = network.training
+    parameter_count = network.trainable_parameter_count
+    try:
+        network.reset_normalization_stats()
+        network.train()
+        network(*sample_pairs(3))
+        trained_state = network.normalization_state_dict()
+        assert trained_state
+        assert all(value.device.type == "cpu" for value in trained_state.values())
+        assert any(
+            int(value.item()) > 0
+            for key, value in trained_state.items()
+            if key.endswith("sample_count")
+        )
+        assert not any(
+            name.startswith("normalization.")
+            for name, _parameter in network.named_parameters()
+        )
+        assert network.trainable_parameter_count == parameter_count
+
+        network.reset_normalization_stats()
+        assert all(
+            int(value.item()) == 0
+            for key, value in network.normalization_state_dict().items()
+            if key.endswith("sample_count")
+        )
+        network.load_normalization_state_dict(trained_state)
+        restored = network.normalization_state_dict()
+        for key in trained_state:
+            torch.testing.assert_close(restored[key], trained_state[key])
+
+        missing = dict(trained_state)
+        missing.pop(next(iter(missing)))
+        with pytest.raises(ValueError, match="keys do not match"):
+            network.load_normalization_state_dict(missing)
+    finally:
+        network.load_normalization_state_dict(original_state)
+        network.train(was_training)
+
+
 def test_forward_never_calls_offline_compilers_or_svd(
     network: InvariantGatePipelineV2,
     monkeypatch: pytest.MonkeyPatch,
@@ -660,12 +743,21 @@ def test_compiled_mixed_teacher_can_be_overfit_on_32_samples(
             if ".a.pair.x." in path.candidate.role
             and path.candidate.shortcut_rank is None
         )
-        mixed_scalar = model._normalize_schema(
-            model._primitive(scalar_path, debug.state).squeeze(-1)
-        )[..., 0]
+        scalar_index = model._stage_scalars["readout"].index(scalar_path)
+        scalar_offset = (
+            2
+            + len(model.config.radial.rbf_centers)
+            + len(model.config.radial.inverse_powers)
+            + sum(
+                path.primitive_channels
+                for path in model._stage_scalars["readout"][:scalar_index]
+            )
+        )
+        mixed_scalar = debug.invariants["readout"][..., scalar_offset]
         mixed_covariant = model._primitive(covariant_path, debug.state)[..., 0, :]
         target = mixed_scalar.unsqueeze(-1) * mixed_covariant
         target_scale = target.square().mean().clamp_min(1.0e-12)
+    model.eval()
 
     optimizer = torch.optim.LBFGS(
         model.parameters(),
