@@ -366,6 +366,17 @@ def test_attention_and_soft_moe_change_actual_branch_aggregation() -> None:
     assert not torch.allclose(outputs["linear"], outputs["attention"])
     assert not torch.allclose(outputs["attention"], outputs["soft_moe"])
     assert all(bool(torch.isfinite(value).all()) for value in outputs.values())
+    for model in (models["attention"], models["soft_moe"]):
+        path_role = model.coefficient_head_role_manifest[0]["role"]
+        with pytest.raises(ValueError, match="linear path aggregation"):
+            model.set_covariant_path_activity(path_role, False)
+        carrier_role = next(
+            item["role"]
+            for item in model.projection_input_role_manifest
+            if item["kind"] == "legacy_carrier"
+        )
+        with pytest.raises(ValueError, match="linear path aggregation"):
+            model.set_legacy_carrier_activity(carrier_role, False)
 
 
 def test_parameter_share_group_reuses_module_objects_and_parameters() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 
 import pytest
@@ -708,6 +709,237 @@ def test_output_shapes_and_all_trainable_gradients_are_finite(
         assert parameter.grad is not None, name
         assert bool(torch.isfinite(parameter.grad).all()), name
         assert float(parameter.grad.abs().sum()) > 0.0, name
+
+
+@pytest.fixture(scope="module")
+def causal_mask_network() -> InvariantGatePipelineV2:
+    torch.manual_seed(20260823)
+    model = build_invariant_gate_pipeline_v2(
+        d3_generators(),
+        one_stage_config((2,)),
+        generator_names=("threefold", "twofold"),
+    )
+    model.eval()
+    return model
+
+
+def _parameter_schema(
+    model: InvariantGatePipelineV2,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    return tuple(
+        (name, tuple(parameter.shape))
+        for name, parameter in model.named_parameters()
+    )
+
+
+def test_default_causal_activity_preserves_the_legacy_runtime(
+    causal_mask_network: InvariantGatePipelineV2,
+) -> None:
+    model = causal_mask_network
+    assert not model.legacy_carrier_gates
+    assert model.causal_mask_manifest["legacy_carrier_gate_mode"] is None
+    assert all(
+        item["active"] for item in model.coefficient_head_role_manifest
+    )
+    assert all(
+        item["active"] for item in model.projection_input_role_manifest
+    )
+
+    debug = model.debug_forward(*sample_pairs(2))
+    carrier = next(
+        item
+        for item in model.projection_input_role_manifest
+        if item["kind"] == "legacy_carrier"
+    )
+    source_name = carrier["source_names"][0]
+    target = TypeKey("A")
+    torch.testing.assert_close(
+        debug.concats[carrier["stage"]][target][
+            ..., carrier["start"] : carrier["stop"], :
+        ],
+        debug.state[source_name][target],
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_pair_and_stf_activity_masks_keep_shapes_and_zero_only_the_roles(
+    causal_mask_network: InvariantGatePipelineV2,
+) -> None:
+    model = causal_mask_network
+    roles = {
+        item["path_family"]: item["role"]
+        for item in model.coefficient_head_role_manifest
+        if item["path_family"] in {"pair", "stf"}
+    }
+    assert roles.keys() == {"pair", "stf"}
+    centers, frames = sample_pairs(2)
+    parameter_schema = _parameter_schema(model)
+    state_schema = tuple(
+        (name, tuple(value.shape)) for name, value in model.state_dict().items()
+        if isinstance(value, Tensor)
+    )
+    reference = model(centers, frames)
+    try:
+        for role in roles.values():
+            model.set_covariant_path_activity(role, False)
+        debug = model.debug_forward(centers, frames)
+        for role in roles.values():
+            torch.testing.assert_close(
+                debug.direct_paths[role],
+                torch.zeros_like(debug.direct_paths[role]),
+                rtol=0,
+                atol=0,
+            )
+        active_by_role = {
+            item["role"]: item["active"]
+            for item in model.coefficient_head_role_manifest
+        }
+        assert all(not active_by_role[role] for role in roles.values())
+        assert any(
+            item["kind"] == "pair" and item["active"]
+            for item in model.descriptor_role_manifest
+        )
+        assert any(
+            item["kind"] == "stf" and item["active"]
+            for item in model.descriptor_role_manifest
+        )
+        assert _parameter_schema(model) == parameter_schema
+        assert tuple(
+            (name, tuple(value.shape))
+            for name, value in model.state_dict().items()
+            if isinstance(value, Tensor)
+        ) == state_schema
+    finally:
+        for role in roles.values():
+            model.set_covariant_path_activity(role, True)
+    torch.testing.assert_close(model(centers, frames), reference, rtol=0, atol=0)
+
+
+def test_legacy_carrier_activity_mask_keeps_its_projection_slot(
+    causal_mask_network: InvariantGatePipelineV2,
+) -> None:
+    model = causal_mask_network
+    carrier = next(
+        item
+        for item in model.projection_input_role_manifest
+        if item["kind"] == "legacy_carrier"
+    )
+    centers, frames = sample_pairs(2)
+    reference = model(centers, frames)
+    parameter_schema = _parameter_schema(model)
+    try:
+        model.set_legacy_carrier_activity(carrier["role"], False)
+        updated = next(
+            item
+            for item in model.projection_input_role_manifest
+            if item["role"] == carrier["role"]
+        )
+        assert updated["active"] is False
+        debug = model.debug_forward(centers, frames)
+        target = TypeKey("A")
+        value = debug.concats[carrier["stage"]][target][
+            ..., carrier["start"] : carrier["stop"], :
+        ]
+        torch.testing.assert_close(value, torch.zeros_like(value), rtol=0, atol=0)
+        assert _parameter_schema(model) == parameter_schema
+    finally:
+        model.set_legacy_carrier_activity(carrier["role"], True)
+    torch.testing.assert_close(model(centers, frames), reference, rtol=0, atol=0)
+
+
+def test_projection_input_manifest_is_contiguous_and_matches_module_shapes(
+    causal_mask_network: InvariantGatePipelineV2,
+) -> None:
+    model = causal_mask_network
+    modules = model.channel_projection_modules_by_role()
+    rows = model.projection_input_role_manifest
+    assert modules
+    assert {item["projection_role"] for item in rows} == set(modules)
+    for projection_role, module in modules.items():
+        selected = tuple(
+            item for item in rows if item["projection_role"] == projection_role
+        )
+        assert selected
+        cursor = 0
+        for item in selected:
+            assert item["start"] == cursor
+            assert item["stop"] > item["start"]
+            cursor = item["stop"]
+        assert hasattr(module, "weight")
+        assert cursor == module.weight.shape[1]
+    mask_roles = {
+        item["role"]
+        for family in ("covariant_paths", "legacy_carriers")
+        for item in model.causal_mask_manifest[family]
+    }
+    assert mask_roles == {item["role"] for item in rows}
+
+
+def test_preallocated_legacy_carrier_gate_modes_share_one_schema(
+    causal_mask_network: InvariantGatePipelineV2,
+) -> None:
+    base = causal_mask_network
+    models = {}
+    for mode in ("direct", "residual_zero", "default"):
+        model = copy.deepcopy(base)
+        torch.manual_seed(20260824)
+        model.configure_legacy_carrier_gates(mode)
+        model.eval()
+        models[mode] = model
+
+    schemas = {_parameter_schema(model) for model in models.values()}
+    assert len(schemas) == 1
+    assert models["direct"].trainable_parameter_count > base.trainable_parameter_count
+    gate_roles = {
+        tuple(model.legacy_carrier_gate_modules_by_role()) for model in models.values()
+    }
+    assert len(gate_roles) == 1
+    assert gate_roles.pop()
+    for role, direct_head in (
+        models["direct"].legacy_carrier_gate_modules_by_role().items()
+    ):
+        default_head = models["default"].legacy_carrier_gate_modules_by_role()[role]
+        torch.testing.assert_close(
+            direct_head.weight, default_head.weight, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            direct_head.bias, default_head.bias, rtol=0, atol=0
+        )
+    assert all(
+        int(torch.count_nonzero(parameter)) == 0
+        for parameter in models["residual_zero"].legacy_carrier_gates.parameters()
+    )
+
+    centers, frames = sample_pairs(2)
+    reference = base(centers, frames)
+    torch.testing.assert_close(
+        models["direct"](centers, frames), reference, rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        models["residual_zero"](centers, frames), reference, rtol=0, atol=0
+    )
+    default = models["default"]
+    debug = default.debug_forward(centers, frames)
+    carrier = next(
+        item
+        for item in default.projection_input_role_manifest
+        if item["kind"] == "legacy_carrier"
+    )
+    target = TypeKey("A")
+    source_name = carrier["source_names"][0]
+    trunk = default.stage_trunks[carrier["stage"]](
+        debug.invariants[carrier["stage"]]
+    )
+    head = default.legacy_carrier_gate_modules_by_role()[carrier["role"]]
+    expected = debug.state[source_name][target] * (
+        1.0 + torch.tanh(head(trunk))
+    ).unsqueeze(-1)
+    actual = debug.concats[carrier["stage"]][target][
+        ..., carrier["start"] : carrier["stop"], :
+    ]
+    torch.testing.assert_close(actual, expected)
+    assert default.causal_mask_manifest["legacy_carrier_gate_mode"] == "default"
 
 
 @pytest.mark.parametrize(

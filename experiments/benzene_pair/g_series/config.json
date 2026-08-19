@@ -1,0 +1,63 @@
+{
+  "schema_name": "tfenn_benzene_pair_g_series",
+  "schema_version": 1,
+  "study_directory_name": "g_series_e311_mechanisms_cpu_v1",
+  "origin_note": "G was initiated after observing preliminary F1/F2 underperformance; F outcomes motivate G but are not used as G evidence.",
+  "scope_note": "G audits E311 mechanisms and does not continue the Strict Flow or GNN studies.",
+  "model_count": 70,
+  "variant_count": 14,
+  "paired_seed_count": 5,
+  "execution_shard_count": 5,
+  "model_ids": [
+    "G101", "G102", "G103", "G104", "G105", "G106", "G107", "G108", "G109", "G110", "G111", "G112", "G113", "G114",
+    "G201", "G202", "G203", "G204", "G205", "G206", "G207", "G208", "G209", "G210", "G211", "G212", "G213", "G214",
+    "G301", "G302", "G303", "G304", "G305", "G306", "G307", "G308", "G309", "G310", "G311", "G312", "G313", "G314",
+    "G401", "G402", "G403", "G404", "G405", "G406", "G407", "G408", "G409", "G410", "G411", "G412", "G413", "G414",
+    "G501", "G502", "G503", "G504", "G505", "G506", "G507", "G508", "G509", "G510", "G511", "G512", "G513", "G514"
+  ],
+  "paired_seeds": [
+    {"seed_index": 1, "model_seed": 20260822, "shuffle_seed": 20260823},
+    {"seed_index": 2, "model_seed": 20260832, "shuffle_seed": 20260833},
+    {"seed_index": 3, "model_seed": 20260842, "shuffle_seed": 20260843},
+    {"seed_index": 4, "model_seed": 20260852, "shuffle_seed": 20260853},
+    {"seed_index": 5, "model_seed": 20260862, "shuffle_seed": 20260863}
+  ],
+  "shard_paths": [
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
+  ],
+  "epochs": 500,
+  "batch_size": 1000,
+  "effective_batch_size": 1000,
+  "micro_batch_size": 1000,
+  "learning_rate": 0.003,
+  "weight_decay": 0.0001,
+  "scheduler_step_size": 125,
+  "scheduler_gamma": 0.5,
+  "validation_every": 1,
+  "split_seed": 20260821,
+  "model_seed": 20260822,
+  "shuffle_seed": 20260823,
+  "split_fractions": [0.8, 0.1, 0.1],
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 4,
+  "symmetry_tolerance": 0.0001,
+  "symmetry_probe_count": 8,
+  "expected_sample_count": 400000,
+  "expected_dataset_revision": 3,
+  "expected_opls_version": "2.0.0",
+  "enable_tf32": false,
+  "relative_force_norm_sample_count": 10000,
+  "relative_force_norm_seed": 20260824,
+  "comet": {
+    "enabled": true,
+    "required_online": true,
+    "project_name": "tfenn_g_series_e311_mechanisms_cpu",
+    "workspace": null,
+    "upload_checkpoints": true,
+    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "g_series", "e311_mechanisms", "cpu"]
+  }
+}

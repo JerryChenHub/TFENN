@@ -53,6 +53,7 @@ __all__ = [
     "InvariantGatePipelineV2",
     "InvariantGatePipelineV2Config",
     "InvariantGateStageV2Config",
+    "LegacyCarrierGateMode",
     "PipelineV2CompilationError",
     "PipelineV2Debug",
     "RadialFeaturesV2Config",
@@ -92,6 +93,7 @@ ChannelProjection = Literal[
     "cayley",
 ]
 PathAggregation = Literal["linear", "attention", "soft_moe"]
+LegacyCarrierGateMode = Literal["direct", "residual_zero", "default"]
 TypedStateV2: TypeAlias = dict[str, dict[TypeKey, Tensor]]
 _RAW_SOURCES = frozenset(("x", "r"))
 _RESERVED_STREAMS: dict[str, Stream] = {"x": "A", "r": "B"}
@@ -885,6 +887,16 @@ class PipelineV2Debug:
 
 def _type_label(key: TypeKey) -> str:
     return "a" if key.stream == "A" else f"b{key.component}"
+
+
+def _projection_role(stage_name: str, target: TypeKey) -> str:
+    return f"{stage_name}.{_type_label(target)}"
+
+
+def _legacy_carrier_role(
+    stage_name: str, target: TypeKey, source_name: str
+) -> str:
+    return f"{stage_name}.{_type_label(target)}.legacy_carrier.{source_name}"
 
 
 def _signature_label(signature: CSignature | None, shortcut_rank: int | None) -> str:
@@ -1722,6 +1734,25 @@ class _CayleyChannelProjection(nn.Module):
         return torch.einsum("oi,...id->...od", rotation, projected)
 
 
+def _channel_projection_input_channels(module: nn.Module) -> int:
+    if isinstance(module, _ChannelProjection):
+        return int(module.weight.shape[1])
+    if isinstance(
+        module,
+        (
+            _FactorizedChannelProjection,
+            _TuckerChannelProjection,
+            _TensorTrainChannelProjection,
+        ),
+    ):
+        return int(module.right.shape[1])
+    if isinstance(module, _ToeplitzChannelProjection):
+        return module.input_channels
+    if isinstance(module, _CayleyChannelProjection):
+        return int(module.base.shape[1])
+    raise TypeError("unknown channel projection module")
+
+
 def _build_channel_projection(
     stage: InvariantGateStageV2Config,
     input_channels: int,
@@ -2311,6 +2342,7 @@ class InvariantGatePipelineV2(nn.Module):
         self.channel_projections = nn.ModuleDict()
         self.skip_projections = nn.ModuleDict()
         self.skip_gates = nn.ModuleDict()
+        self.legacy_carrier_gates = nn.ModuleDict()
         self.reversible_couplings = nn.ModuleDict()
         self.descriptor_transforms = nn.ModuleDict()
         self.normalization = nn.ModuleDict()
@@ -2318,6 +2350,8 @@ class InvariantGatePipelineV2(nn.Module):
         self._projection_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_projection_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_gate_names: dict[tuple[str, TypeKey], str] = {}
+        self._legacy_carrier_gate_names: dict[str, str] = {}
+        self._legacy_carrier_gate_mode: LegacyCarrierGateMode | None = None
         self._reversible_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_sources: dict[tuple[str, TypeKey], tuple[str, ...]] = {}
         shared_modules: dict[tuple[Any, ...], nn.Module] = {}
@@ -2552,6 +2586,28 @@ class InvariantGatePipelineV2(nn.Module):
             name: {key: tuple(items) for key, items in targets.items()}
             for name, targets in stage_paths.items()
         }
+        self._covariant_path_activity = {
+            path.candidate.role: True
+            for targets in self._stage_paths.values()
+            for paths in targets.values()
+            for path in paths
+        }
+        self._covariant_path_stages = {
+            path.candidate.role: path.candidate.stage
+            for targets in self._stage_paths.values()
+            for paths in targets.values()
+            for path in paths
+        }
+        self._legacy_carrier_activity: dict[str, bool] = {}
+        self._legacy_carrier_stages: dict[str, str] = {}
+        for stage in config.stages:
+            if stage.skip_policy != "legacy":
+                continue
+            for target in self._stage_paths[stage.name]:
+                for source_name in self._skip_sources[(stage.name, target)]:
+                    role = _legacy_carrier_role(stage.name, target, source_name)
+                    self._legacy_carrier_activity[role] = True
+                    self._legacy_carrier_stages[role] = stage.name
         self._invariant_counts = invariant_counts
         all_parameterized_modules = (
             *self.stage_trunks.values(),
@@ -2690,6 +2746,7 @@ class InvariantGatePipelineV2(nn.Module):
                                 candidate.signature,
                                 candidate.shortcut_rank,
                             ),
+                            "active": self._covariant_path_activity[candidate.role],
                             "primitive_channels": path.primitive_channels,
                             "target_channels": target_channels,
                             "coefficient_channels": path.coefficient_channels,
@@ -2697,6 +2754,195 @@ class InvariantGatePipelineV2(nn.Module):
                         }
                     )
         return tuple(result)
+
+    @property
+    def projection_input_role_manifest(self) -> tuple[dict[str, Any], ...]:
+        """Map every typed projection input slice to a stable causal role."""
+        result: list[dict[str, Any]] = []
+        for stage in self.config.stages:
+            for target, paths in self._stage_paths[stage.name].items():
+                projection_role = _projection_role(stage.name, target)
+                projection_name = self._projection_names[(stage.name, target)]
+                start = 0
+                if stage.skip_policy == "legacy":
+                    for source_name in self._skip_sources[(stage.name, target)]:
+                        stop = start + self._channels[(source_name, target)]
+                        role = _legacy_carrier_role(
+                            stage.name, target, source_name
+                        )
+                        result.append(
+                            {
+                                "role": role,
+                                "kind": "legacy_carrier",
+                                "stage": stage.name,
+                                "target": _type_label(target),
+                                "source_names": (source_name,),
+                                "start": start,
+                                "stop": stop,
+                                "active": self._legacy_carrier_activity[role],
+                                "projection_role": projection_role,
+                                "module_name": (
+                                    f"channel_projections.{projection_name}"
+                                ),
+                                "gate_mode": self._legacy_carrier_gate_mode,
+                                "gate_module_name": (
+                                    None
+                                    if role not in self._legacy_carrier_gate_names
+                                    else "legacy_carrier_gates."
+                                    + self._legacy_carrier_gate_names[role]
+                                ),
+                            }
+                        )
+                        start = stop
+                output_channels = self._channels[(stage.name, target)]
+                for path in paths:
+                    stop = start + output_channels
+                    candidate = path.candidate
+                    result.append(
+                        {
+                            "role": candidate.role,
+                            "kind": "covariant_path",
+                            "stage": stage.name,
+                            "target": _type_label(target),
+                            "source_names": tuple(
+                                dict.fromkeys(
+                                    endpoint.source
+                                    for endpoint in candidate.endpoints
+                                )
+                            ),
+                            "start": start,
+                            "stop": stop,
+                            "active": self._covariant_path_activity[
+                                candidate.role
+                            ],
+                            "projection_role": projection_role,
+                            "module_name": (
+                                f"channel_projections.{projection_name}"
+                            ),
+                            "path_family": _candidate_family(candidate),
+                            "gate_mode": None,
+                            "gate_module_name": None,
+                        }
+                    )
+                    start = stop
+                projection = self.channel_projections[projection_name]
+                input_channels = _channel_projection_input_channels(projection)
+                if start != input_channels:
+                    raise RuntimeError(
+                        f"projection role manifest for {projection_role} has "
+                        f"{start} columns, expected {input_channels}"
+                    )
+        return tuple(result)
+
+    def channel_projection_modules_by_role(self) -> Mapping[str, nn.Module]:
+        """Return a stable read only projection-role to module mapping."""
+        return MappingProxyType(
+            {
+                _projection_role(stage.name, target): self.channel_projections[
+                    self._projection_names[(stage.name, target)]
+                ]
+                for stage in self.config.stages
+                for target in self._stage_paths[stage.name]
+            }
+        )
+
+    def legacy_carrier_gate_modules_by_role(self) -> Mapping[str, nn.Linear]:
+        """Return preallocated legacy carrier Gate heads by carrier role."""
+        return MappingProxyType(
+            {
+                role: self.legacy_carrier_gates[module_name]
+                for role, module_name in self._legacy_carrier_gate_names.items()
+            }
+        )
+
+    @property
+    def causal_mask_manifest(self) -> dict[str, Any]:
+        """Describe the current post-build causal activities and Gate mode."""
+        return {
+            "schema_name": "tfenn_invariant_gate_causal_masks",
+            "schema_version": 1,
+            "legacy_carrier_gate_mode": self._legacy_carrier_gate_mode,
+            "covariant_paths": tuple(
+                {
+                    "role": role,
+                    "stage": self._covariant_path_stages[role],
+                    "active": active,
+                }
+                for role, active in self._covariant_path_activity.items()
+            ),
+            "legacy_carriers": tuple(
+                item
+                for item in self.projection_input_role_manifest
+                if item["kind"] == "legacy_carrier"
+            ),
+        }
+
+    @staticmethod
+    def _validate_activity(active: bool) -> bool:
+        if not isinstance(active, bool):
+            raise TypeError("causal activity must be bool")
+        return active
+
+    def _require_linear_mask_stage(self, stage_name: str) -> None:
+        stage = next(item for item in self.config.stages if item.name == stage_name)
+        if stage.path_aggregation != "linear":
+            raise ValueError(
+                "causal activity masks require linear path aggregation"
+            )
+
+    def set_covariant_path_activity(self, role: str, active: bool) -> None:
+        """Enable or disable one compiled covariant role without changing shape."""
+        if role not in self._covariant_path_activity:
+            raise KeyError(f"unknown covariant path role {role}")
+        resolved = self._validate_activity(active)
+        if not resolved:
+            self._require_linear_mask_stage(self._covariant_path_stages[role])
+        self._covariant_path_activity[role] = resolved
+
+    def set_legacy_carrier_activity(self, role: str, active: bool) -> None:
+        """Enable or disable one legacy carrier edge without changing shape."""
+        if role not in self._legacy_carrier_activity:
+            raise KeyError(f"unknown legacy carrier role {role}")
+        resolved = self._validate_activity(active)
+        if not resolved:
+            self._require_linear_mask_stage(self._legacy_carrier_stages[role])
+        self._legacy_carrier_activity[role] = resolved
+
+    def configure_legacy_carrier_gates(
+        self, mode: LegacyCarrierGateMode
+    ) -> None:
+        """Preallocate a common per-source Gate schema for G-series carriers."""
+        if mode not in ("direct", "residual_zero", "default"):
+            raise ValueError("unsupported legacy carrier Gate mode")
+        if self._legacy_carrier_gate_mode is not None:
+            if self._legacy_carrier_gate_mode == mode:
+                return
+            raise RuntimeError("legacy carrier Gates are already configured")
+        stage_lookup = {stage.name: stage for stage in self.config.stages}
+        rows = tuple(
+            item
+            for item in self.projection_input_role_manifest
+            if item["kind"] == "legacy_carrier"
+        )
+        for index, item in enumerate(rows):
+            role = str(item["role"])
+            stage = stage_lookup[str(item["stage"])]
+            output_channels = int(item["stop"]) - int(item["start"])
+            module_name = f"legacy_carrier_gate_{index:04d}"
+            head = nn.Linear(
+                stage.trunk_width,
+                output_channels,
+                dtype=self._runtime_reference.dtype,
+                device=self._runtime_reference.device,
+            )
+            if mode == "residual_zero":
+                with torch.no_grad():
+                    head.weight.zero_()
+                    assert head.bias is not None
+                    head.bias.zero_()
+            self._legacy_carrier_gate_names[role] = module_name
+            self.legacy_carrier_gates[module_name] = head
+        self._legacy_carrier_gate_mode = mode
 
     def coefficient_head_modules_by_role(self) -> Mapping[str, nn.Module]:
         """Return a stable read only role to coefficient head mapping."""
@@ -3114,6 +3360,39 @@ class InvariantGatePipelineV2(nn.Module):
             skip = skip * gate.unsqueeze(-1)
         return skip
 
+    def _legacy_carrier_value(
+        self,
+        stage: InvariantGateStageV2Config,
+        target: TypeKey,
+        source_name: str,
+        state: TypedStateV2,
+        trunk: Tensor,
+    ) -> Tensor:
+        role = _legacy_carrier_role(stage.name, target, source_name)
+        value = state[source_name][target]
+        if not self._legacy_carrier_activity[role]:
+            return torch.zeros_like(value)
+        if self._legacy_carrier_gate_mode in ("residual_zero", "default"):
+            module_name = self._legacy_carrier_gate_names[role]
+            head = self.legacy_carrier_gates[module_name]
+            gate = 1.0 + torch.tanh(head(trunk))
+            value = value * gate.unsqueeze(-1)
+        return value
+
+    def _inactive_branch(
+        self,
+        stage: InvariantGateStageV2Config,
+        target: TypeKey,
+        trunk: Tensor,
+    ) -> Tensor:
+        output_channels = self._channels[(stage.name, target)]
+        representation_dimension = int(
+            getattr(self, self._metric_names[target]).shape[0]
+        )
+        return trunk.new_zeros(
+            trunk.shape[:-1] + (output_channels, representation_dimension)
+        )
+
     def _run_local(
         self,
         displacement: Tensor,
@@ -3165,13 +3444,25 @@ class InvariantGatePipelineV2(nn.Module):
                 branches: list[Tensor] = []
                 routing_logits: list[Tensor] = []
                 for path in paths:
+                    role = path.candidate.role
+                    if not self._covariant_path_activity[role]:
+                        if coefficient_debug is not None:
+                            head_value = self.path_heads[self._head_names[role]](trunk)
+                            output_channels = self._channels[(stage.name, target)]
+                            coefficient_debug[role] = head_value.reshape(
+                                head_value.shape[:-1]
+                                + (output_channels, path.primitive_channels)
+                            )
+                        branch = self._inactive_branch(stage, target, trunk)
+                        branches.append(branch)
+                        if direct_debug is not None:
+                            direct_debug[role] = branch
+                        continue
                     primitive = self._primitive(path, state)
-                    head_value = self.path_heads[self._head_names[path.candidate.role]](
-                        trunk
-                    )
+                    head_value = self.path_heads[self._head_names[role]](trunk)
                     output_channels = self._channels[(stage.name, target)]
                     if coefficient_debug is not None:
-                        coefficient_debug[path.candidate.role] = head_value.reshape(
+                        coefficient_debug[role] = head_value.reshape(
                             head_value.shape[:-1]
                             + (output_channels, path.primitive_channels)
                         )
@@ -3218,7 +3509,9 @@ class InvariantGatePipelineV2(nn.Module):
                         direct_debug[path.candidate.role] = branch
                 if stage.skip_policy == "legacy":
                     skip = tuple(
-                        state[name][target]
+                        self._legacy_carrier_value(
+                            stage, target, name, state, trunk
+                        )
                         for name in self._skip_sources[(stage.name, target)]
                     )
                     concat = torch.cat((*skip, *branches), dim=-2)
