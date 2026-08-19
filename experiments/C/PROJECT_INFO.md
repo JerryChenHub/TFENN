@@ -15,7 +15,7 @@ The fixed split was 320,000 Train, 40,000 Validation, and 40,000 Test samples wi
 
 ## Purpose
 
-Compare a 20k parameter model level GroupConv MLP with 30 Invariant Gate V2 designs while testing A and B routes, interleaving, channel allocation, path ablations, invariant context, and lower and upper capacity controls.
+Compare a 20k parameter external model-level Reynolds-averaged MLP baseline with 30 Invariant Gate V2 designs while testing A and B routes, interleaving, channel allocation, path ablations, invariant context, and lower and upper capacity controls.
 
 ## Protocol and time
 

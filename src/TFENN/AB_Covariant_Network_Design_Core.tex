@@ -77,7 +77,7 @@
 \title{\vspace{-1.5em}\textcolor{Ink}{\bfseries 单次根框架 A/B 协变分子网络}\\[.35em]
 \large\textcolor{Muted}{数学定义、网络构架与离线广义 $C$ 注册表}}
 \author{}
-\date{Design Core v2}
+\date{Design Core v3}
 
 \begin{document}
 \maketitle
@@ -86,7 +86,7 @@
 \begin{designbox}
 \textbf{核心命题。}
 整片同种刚性分子云只在根分子 $0$ 的 body frame 中定位一次；所有节点、边、层和力头始终处于同一个 root fiber。
-$R_i\mapsto B_i^{(r)}$ 先消去分子 $i$ 的右侧 gauge，训练前冻结的 typed covariant basis $C$ 再负责线性 lift、非线性 lift、A/B 混合、B/B 混合与直接 A 型力输出。运行时只学习 channel mixing 与不变量标量系数；全项目绝不使用群平均。
+$R_i\mapsto B_i^{(r)}$ 先消去分子 $i$ 的右侧 gauge，训练前冻结的 typed covariant basis $C$ 再负责线性 lift、非线性 lift、A/B 混合、B/B 混合与直接 A 型力输出。运行时只学习 channel mixing 与不变量标量系数；TFENN 协变层不使用群平均，群平均模型只可作为明确标注的外部 baseline。
 \end{designbox}
 
 \section{对话脉络：从双分子协变律到通用 $C$ 注册表}
@@ -99,13 +99,28 @@ $R_i\mapsto B_i^{(r)}$ 先消去分子 $i$ 的右侧 gauge，训练前冻结的 
   \item 最初考虑从边学习唯一正交 frame；对称分子的稳定子使连续、唯一、严格协变的 canonical frame 不可取，于是转向不求逆的 typed covariants。
   \item 将“单中心”精确定义为\emph{一次 root local frame}：整片分子云只用分子 $0$ 重定位一次，不再建立 node-local 或 edge-local frame。
   \item 因所有 $h_{i,\ell}^{\tau}$ 位于同一 root fiber，任意节点 $i,j$ 的同型特征承受同一个 $\rho_\tau(g)$；因此可直接跨节点做 intertwiner mixing，无 transporter。
-  \item 将网络结构定为：同边 typed 数据 $\to$ 不变量 gates 与 $C$ 输出 $\to$ 有向消息 $\to$ 邻居求和 $\to$ typed residual；共享程序一次性输出所有分子的力。
+  \item typed $C$ activation 可组成 pair typed-DAG，也可进一步扩展为有向消息、邻居求和与 typed update；GNN 结构尚未冻结。
   \item 用苯的显式例子验证 $C_{A\leftarrow AB^{(1)}}(a,b)=ba$：它与 $a$ 同型协变、处处多项式可微，而且不需要群平均。
   \item 把旧记号 $I_{ij}$ 改为 $s_{ij,\ell}$；不变量不再被视为外加特征，而统一解释为输出到平凡类型 $\one$ 的 $C$。
   \item 统一命名为 $B^{(1)},B^{(2)},\ldots$，禁止用 $Q,T$ 代替 B block；上标 $(r)$ 是 type label，不是张量幂。
   \item 将一元线性 lift、多元非线性 lift、A/B 与 B/B mixing 统一为 $\Hom_G$ 中的广义 $C$，并由输入生成元在训练前求完整零空间；不预存 irrep 或 Clebsch--Gordan 表。
   \item 代码审阅后形成固定链路：\texttt{GeneratorSystem} $\to$ \texttt{TypeCatalog} $\to$ \texttt{CSignature} $\to$ full basis $\to$ \texttt{CRegistry} $\to$ differentiable runtime；完整父基与显式 basis view 分离保存。
 \end{enumerate}
+
+\section{当前开发范围与群输入}
+
+项目当前以 benzene pair 为主要开发与诊断对象，目标是在接口不变的前提下推广到任意受支持的 proper-rotation group。benzene 只决定本次输入的 generators、primitive B manifest 与测试数据，不决定网络类或 $C$ 的实现。
+
+项目讨论中的 \texttt{D6\textasciitilde} 统一指 benzene 的 proper rotational dihedral group
+\begin{equation}
+  D_6^{\mathrm{rot}}
+  =\langle r,s\mid r^6=s^2=e,\ srs=r^{-1}\rangle,
+  \qquad
+  r=R_n(\pi/3),\quad s=R_a(\pi),\quad a\perp n.
+\end{equation}
+即由绕分子法向的 $60^\circ$ 旋转与绕面内轴的 $180^\circ$ 旋转生成的 proper-rotation group；它不包含镜像、反演或其他 improper operations。
+
+运行配置只提供 generator actions 与所需 ranks/types。anchors、primitive B blocks、type manifest、Hom multiplicities 与完整 $C$ bases 均由这些输入离线编译。实现不得预存 benzene 的群闭包、群元素表、irrep/CG 表、Hom 维数或专用 $C$ tensors。本文的 benzene 维数与显式 maps 仅用于解释和回归诊断，不是 runtime 常量。
 
 \section{统一数学设置与记号}
 
@@ -143,9 +158,9 @@ $x_i\in\R^3$、$O_i\in\SO(3)$。只做一次根坐标变换：
 
 类型集合与 carrier space 记为
 \begin{equation}
-  \mathcal T=\{A,B^{(r)}:r\in\mathcal R_B\},
+  \mathscr T=\{A,B^{(r)}:r\in\mathcal R_B\},
   \qquad
-  \rho_\tau:G\to \mathrm{GL}(V_\tau),\quad \tau\in\mathcal T,
+  \rho_\tau:G\to \mathrm{GL}(V_\tau),\quad \tau\in\mathscr T,
 \end{equation}
 其中 $V_A\simeq\R^3$ 且 $\rho_A(g)=g$。对 pose/STF block，记
 $\widehat\rho_{B^{(r)}}:\SO(3)\to\mathrm{GL}(V_{B^{(r)}})$ 为 ambient rotation action，并令
@@ -193,14 +208,14 @@ $f_i,\ F_i=O_0f_i$
 
 所有节点、所有层满足同一变换律
 \begin{equation}
-  h_{i,\ell}^{\tau}longmapsto
+  h_{i,\ell}^{\tau}\longmapsto
   (I_{c_{\ell,\tau}}\otimes\rho_\tau(g))h_{i,\ell}^{\tau}.
   \label{eq:hidden-law}
 \end{equation}
 
 \section{网络总构架}
 
-主构架只保留四个阶段；所有实现细节均下沉到第\,\ref{sec:c-math}--\ref{sec:subflows} 节。
+冻结的是四个接口阶段：一次 root preprocessing、A/B typed encoding、若干 typed $C$ stages 与最终 A-head。中间 stages 可组成 pair typed-DAG，也可在未来扩展为 GNN；网络深度、A/B 节点排列、history reuse 与内部 channel 数均不是本节预先固定的数学常量。所有实现细节均下沉到第\,\ref{sec:c-math}--\ref{sec:subflows} 节。
 
 \begin{center}
 \begin{tikzpicture}[node distance=7mm]
@@ -218,8 +233,8 @@ $f_i,\ F_i=O_0f_i$
 \begin{equation}
 \{(x_i,O_i)\}
 \xrightarrow{\text{one root}}
-\{h_{i,0}^{\tau}\}_{\tau\in\mathcal T}
-\xrightarrow{L\times(\,s\to\gamma,\ C\to m,\ \sum_j,\ \text{typed update}\,)}
+\{h_{i,0}^{\tau}\}_{\tau\in\mathscr T}
+\xrightarrow{\text{declared typed }C\text{ graph}\;(s\to\gamma,\ C\Lambda,\ \text{channel mixing})}
 \{h_{i,L}^{\tau}\}
 \xrightarrow{A\text{-head}}
 f_i
@@ -227,7 +242,90 @@ f_i
 F_i.
 \label{eq:main-flow}
 \end{equation}
-一次 root preprocessing 产生整片结构数据；同一套 edge/node 程序对所有 $i$ 共享，并同时给出所有受力。
+一次 root preprocessing 产生整片结构数据。pair backbone 可直接预测根分子受力；未来 GNN extension 可共享 edge/node 程序并同时给出所有分子的受力。
+
+\subsection{Covariant flow 与 invariant context 必须分开声明}
+
+Strict flow 是可选构架策略，不是 TFENN 的唯一合法构架。令 $\operatorname{Pa}_{\mathrm{route}}(v)$ 为主要 typed route 的父节点，$\operatorname{Reuse}(v)$ 为额外 earlier-stage sources。每个模型必须从下表明确选择或给出等价的显式 source lists。
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\ttfamily\raggedright\arraybackslash}p{.31\linewidth}X}
+\toprule
+covariant-flow policy & 唯一含义 \\
+\midrule
+STRICT\_DECLARED\_FLOW
+& $\operatorname{CovSrc}(v)=\operatorname{Pa}_{\mathrm{route}}(v)$。\\
+EXPLICIT\_REUSE\_FLOW
+& $\operatorname{CovSrc}(v)=\operatorname{Pa}_{\mathrm{route}}(v)\cup\operatorname{Reuse}(v)$，每个 reuse source 必须列出。\\
+DENSE\_HISTORY\_FLOW
+& 重复读取全部 eligible earlier typed outputs；必须说明 eligibility rule。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Raw covariant access 另行声明为
+\texttt{STEM\_ONLY\_RAW}、
+\texttt{EXPLICIT\_RAW\_REREAD}（列出 stages），或
+\texttt{EVERY\_STAGE\_RAW}。
+
+Invariant Gate 的 source policy 与 covariant flow 正交。统一使用
+\texttt{RAW\_ONLY\_INVARIANTS}、
+\texttt{RAW\_PLUS\_PARENTS\_INVARIANTS}、
+\texttt{DENSE\_HISTORY\_INVARIANTS}，或
+\texttt{EXPLICIT\_INVARIANTS}（显式 scalar source/signature list）。多层重复调用同一 raw invariants 不会增加 covariant edge；相反，重复读取 earlier hidden covariants 必须由 covariant-flow policy 显式许可。
+每个 invariant policy 还必须列出启用的 scalar families：radial/raw、unary、symmetric-power、raw-hidden mixed、hidden-hidden mixed 与 STF shortcuts 中的实际子集；只写 \texttt{FULL} 不足以定义模型。
+
+\subsection{同型 bypass 与跨型 exchange}
+
+令 $\operatorname{Pa}(v)$ 为 flow policy 给出的 stage $v$ 的全部声明 covariant sources。对 target type $\tau$，其中的 same-TypeKey carriers 可与 gated branches 在 channel 轴拼接后共同投影：
+\begin{equation}
+  h_v^\tau
+  =
+  (P_{v,\mathrm{ch}}^\tau\otimes I_{V_\tau})
+  \operatorname{concat}_{\mathrm{ch}}\!\left(
+    \{h_u^\tau:u\in\operatorname{Pa}(v),\ \tau_u=\tau\},
+    \{\gamma_{v,\kappa}(s_v)C_{v,\kappa}\Lambda_{v,\kappa}:\kappa\in\mathcal P_v^\tau\}
+  \right),
+  \label{eq:typed-bypass}
+\end{equation}
+这是 declared same-TypeKey concat-and-project bypass，不是额外的 additive ResNet branch。不同 TypeKey 的信息不能直接 bypass，必须由 registered $C$ 完成 $A\leftrightarrow B$ 或 $B^{(s)}\leftrightarrow B^{(r)}$ exchange。
+
+\subsection{每个模型必须公布的 mixing contract}
+
+任何 model design 都必须逐 stage 记录 target TypeKey、typed channels、execution level、covariant parents、flow policy、raw-covariant-access policy、invariant-context policy 与 bypass sources，并明确以下选择：
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\bfseries\raggedright\arraybackslash}p{.23\linewidth}X}
+\toprule
+对象 & 必须说明的 mixing 方式 \\
+\midrule
+$A\to A$ & unary、self-$\Sym^p$、independent-slot 或 mixed signatures 中启用哪些。\\
+$A\to B^{(r)}$ & linear $(A,1)$、pure-A $(A,p)$ 与 mixed A/B signatures 中启用哪些。\\
+$B\to B$ & 哪些 linear cross-block unary、self-$\Sym^pB$ 与 independent $B\times B$ paths 被启用。\\
+$B\to A$ / A-head & unary、symmetric、independent-slot 与 mixed signatures 中启用哪些。\\
+channel mixing & \texttt{dense}、\texttt{diagonal} 或 \texttt{factorized}；factorized 时必须给出 latent mixing rank。\\
+Invariant Gate & scalar sources、trunk depth/width/activation、gamma-head parameterization 与 coefficient-output activation。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+只写“A/B mixing”或“使用 Gate”不是完整的构架定义。
+
+\subsection{Gate head 与 latent mixing rank}
+
+一般 signed Gate 记为
+\begin{equation}
+  h_v^{\mathrm{gate}}=\operatorname{GateTrunk}_{v,\theta_v}(s_v),
+  \qquad
+  \gamma_{v,\kappa}=W_{\gamma,v,\kappa}h_v^{\mathrm{gate}}+b_{\gamma,v,\kappa}.
+  \label{eq:gate-head}
+\end{equation}
+这里 $\kappa$ 标识 target/source signature 与 source roles。$\gamma_{v,\kappa}$ 是该 stage/path 的完整 channel--basis coefficient tensor；$\gamma_{v,\kappa,\alpha}$ 只是省略 channel indices 后的分量记法。
+trunk 的 depth、width 与 hidden activation 必须由模型声明；当前 one-hidden-layer reference 使用 $h_v^{\mathrm{gate}}=\phi_v(W_{s,v}s_v+b_{s,v})$。最后一式使用 identity coefficient activation，表示 $\gamma$ 可正、可负且不被有界化；它不表示 $\gamma=1$，也不使整个 gated polynomial network 变成线性网络。
+
+在可选 factorized channel mixing 中，latent mixing rank 记为 $r_{\mathrm{mix}}$。它是每条 path 先构造的 learned channel combinations 数目：$P^{(t)}\in\R^{r_{\mathrm{mix}}\times c_t}$ 将第 $t$ 个 source channels 投到 latent index，再由 $P_{\mathrm{out}}\in\R^{c_o\times r_{\mathrm{mix}}}$ 产生 output channels。$r_{\mathrm{mix}}$ 不是群的 rank、STF rank、representation dimension、typed channel 数、polynomial degree 或 Gate width。dense channel mixing 不使用 $r_{\mathrm{mix}}$，而直接为完整 source-channel tuples 产生 coefficients。
 
 \section{广义协变映射 $C$}
 \label{sec:c-math}
@@ -267,7 +365,7 @@ $\Sym^2V_{B^{(2)}}$。同型不等于 symmetric power。
 
 \subsection{$C$ 的数学定义}
 
-对输出类型 $\tau\in\mathcal T\cup\{\one\}$，广义 $C$ 的完整空间定义为
+对输出类型 $\tau\in\mathscr T\cup\{\one\}$，广义 $C$ 的完整空间定义为
 \begin{equation}
   \boxed{
   C_{\tau\leftarrow\Sigma,\alpha}
@@ -401,14 +499,16 @@ $C$ 只作用 representation axes；$c_t,c_o$ 只标识网络 channels。由平�
 \begin{tikzpicture}[node distance=8mm]
   \node[flowStrong,text width=3.6cm] (w) {$\{(x_i,O_i)\}_{i=0}^{N-1}$};
   \node[flow,text width=4.3cm,right=of w] (r) {$X_i,R_i,d_{ij}$\\一次 root structure data};
-  \node[flowStrong,text width=4.7cm,right=of r] (h) {$h_{i,0}^{A}=\alpha(X_i)$\\$h_{i,0}^{B^{(r)}}=B_i^{(r)}$};
+  \node[flowStrong,text width=4.7cm,right=of r] (h) {$h_{i,0}^{A}=\eta_A(X_i)$\\$h_{i,0}^{B^{(r)}}=B_i^{(r)}$};
   \draw[arr] (w)--node[note,above]{式\,\eqref{eq:one-root}}(r);
   \draw[arr] (r)--node[note,above]{shared typed encoding}(h);
 \end{tikzpicture}
 \end{center}
 这里的“structure data”覆盖整片云；后续不会为其他节点重新居中。
 
-\subsection{一层 typed edge/message update}
+\subsection{可选 GNN extension：一层 typed edge/message update}
+
+本小节保留 future molecular-cloud/GNN extension 的数学合同；它不定义当前 benzene-pair backbone，也不把 message passing、邻居聚合或网络深度设为必选构架。
 
 从 $d_{ij}$、$h_{i,\ell}$ 与 $h_{j,\ell}$ 按 signature 取出
 $z_{ij,\ell}^{\Sigma}$。一层的规范形式是
@@ -435,7 +535,7 @@ $\Phi_\ell^\tau$ 仍只能由输出类型为 $\tau$ 的 registered $C$、不变�
   \node[flow,text width=3.25cm,below left=of z] (inv) {$C_{\one\leftarrow\Sigma}$\\$s_{ij,\ell}\to\gamma$};
   \node[flow,text width=3.25cm,below right=of z] (cov) {registered\\$C_{\tau\leftarrow\Sigma}$};
   \node[flowStrong,text width=3.4cm,below=9mm of $(inv)!0.5!(cov)$] (msg) {$m_{j\to i,\ell}^{\tau}$};
-  \node[flow,text width=5.0cm,below=of msg] (upd) {$\sum_j\to M_{i,\ell}^{\tau}$\\typed residual $\to h_{i,\ell+1}^{\tau}$};
+  \node[flow,text width=5.0cm,below=of msg] (upd) {$\sum_j\to M_{i,\ell}^{\tau}$\\declared typed merge/update $\to h_{i,\ell+1}^{\tau}$};
   \draw[arr] (z)--(inv);
   \draw[arr] (z)--(cov);
   \draw[arr] (inv)--(msg);
@@ -552,14 +652,14 @@ self-B polynomial & $\Sym^pV_{B^{(s)}}\to V_{B^{(r)}}$ & 同一 B feature 的非
   &=\sum_{\Sigma,\alpha}
   \gamma_{\Sigma,\alpha}^{\mathrm{out}}(s_{i,L})
   \mathcal C_{A\leftarrow\Sigma,\alpha}(z_{i,L}^{\Sigma}),
-  \qquad f_i\mapsto g_0^\top f_i,
+  \qquad f_i\mapsto gf_i,
   \label{eq:a-head}\\
   F_i&=O_0f_i.
   \label{eq:world-force}
 \end{align}
-由于 $O_0' = HO_0g_0$，有
+由于 $g=g_0^\top$ 且 $O_0' = HO_0g^\top$，有
 \begin{equation}
-  F_i'=HO_0g_0g_0^\top f_i=HF_i,
+  F_i'=HO_0g^\top gf_i=HF_i,
 \end{equation}
 所以一次 root frame 中得到的 $f_i$ 可由同一固定解码程序变回每个分子的世界坐标受力。
 
@@ -585,7 +685,7 @@ self-B polynomial & $\Sym^pV_{B^{(s)}}\to V_{B^{(r)}}$ & 同一 B feature 的非
 \begin{align}
   \overline B^{(1)}
   &=\STF_2(e_z^{\otimes2})
-  =e_ze_z^\top-\tfrac13I,\\
+  =e_ze_z^\top-\tfrac13I_3,\\
   \overline B^{(2)}
   &=\STF_6\!\left(\Re[(e_x+\mathrm i e_y)^{\otimes6}]\right),
 \end{align}
@@ -605,7 +705,7 @@ $\Hom_{D_6^{\mathrm{rot}}}(A,B^{(1)})$ 唯一方向可显式取为
 \begin{align}
   \mathcal C_{B^{(1)}\leftarrow(A,2)}(a)
   &=\PiSTF{2}(a^{\otimes2})
-  =aa^\top-\tfrac{\|a\|^2}{3}I,
+  =aa^\top-\tfrac{\|a\|^2}{3}I_3,
   \label{eq:benz-a2}\\
   \mathcal C_{B^{(2)}\leftarrow(A,6)}(a)
   &=\PiSTF{6}(a^{\otimes6}).
@@ -819,23 +919,24 @@ covariants.py
   \item 整片分子云只建立一次 root local frame；绝不建立 node-local 或 edge-local frame。
   \item $R_i\to B_i^{(r)}$ 后 sender gauge $g_i$ 永久消失；后续只保留共同 root action $g$。
   \item 任意 $h_{i,\ell}^{\tau}$ 与 $h_{j,k}^{\tau}$ 同型协变，因为它们位于同一 root fiber；跨节点 mixing 不需 transporter。
-  \item 同边 A/B 数据必须先通过 typed $C$ 耦合，再做邻居聚合；否则会丢失“哪个位置对应哪个姿态”。
+  \item 若启用 GNN extension，同边 A/B 数据必须先通过 typed $C$ 耦合，再做邻居聚合；否则会丢失“哪个位置对应哪个姿态”。
   \item $C$ 是训练前冻结的完整 typed $\Hom_G$ basis，不是可训练表示、第三条通路或手写的某一个公式。
   \item linear A$\to$B、nonlinear A$\to$B、linear B$\to$B 与 nonlinear B/B 全部是不同 signatures 下的同一个 $C$ 机制。
   \item 不同 B spaces 可以线性混合；存在性与方向数只由对应 $\Hom_G(V_{B^{(s)}},V_{B^{(r)}})$ 决定。
   \item 独立同型 inputs 使用完整 tensor product；只有重复同一 live input 时才使用 normalized $\Sym^p$。
   \item 不变量统一记为 $s$，并由 $C_{\one\leftarrow\Sigma}$ 产生；所有 gates 必须只依赖这些 scalars。
-  \item 全项目绝对禁止群平均。输入生成元只用于离线方程 $CS_q=T_qC$，不进入网络运行时。
+  \item TFENN 协变层禁止 group convolution 与群平均。输入生成元只用于离线方程 $CS_q=T_qC$，不进入网络运行时；明确标注的外部 MLP baseline 可单独使用群平均。
   \item 不预存 irrep 或 CG tables；type partition、anchors 与 $C$ basis 都从输入 generator actions 离线产生。
   \item full basis 永久保存；任何省略或低维 view 都必须显式记录 $P$ 与 rank，完整表达的含义不可被静默改变。
   \item 固定 $C$ 的 polynomial contraction 与 smooth gates 保证梯度存在；离线 nullspace/SVD 不参与反向传播。
-  \item 共享 edge program 与对邻居求和保证固定根下的分子重标号等变；根的选择是一次性结构约定。
+  \item 每个模型必须显式声明 covariant flow、raw covariant access、invariant context、A/B path families、same-type bypass、channel mixing 与 Gate contract。
+  \item 若启用 GNN extension，共享 edge program 与对邻居求和保证固定根下的分子重标号等变；根的选择是一次性结构约定。
   \item 世界力只由 $F_i=O_0f_i$ 解码。直接 A-head 保证协变，但“直接力”本身不等价于自动满足保守力条件。
 \end{enumerate}
 
 \begin{designbox}
 \textbf{最终设计判据。}
-未来任何实现都应能逐项证明：一次 root frame、B 消右 gauge、所有 hidden tensors 共用 root action、typed $C$ 完整基、不变量门控、对称聚合、直接 A-head，以及 $F_i=O_0f_i$ 的世界坐标解码。
+未来任何实现都应能逐项证明：一次 root frame、B 消右 gauge、所有 hidden tensors 共用 root action、typed $C$ 完整基、不变量门控、声明明确的 typed flow 与 mixing contract、直接 A-head，以及 $F_i=O_0f_i$ 的世界坐标解码；若使用 GNN，还必须证明 permutation-symmetric aggregation。
 \end{designbox}
 
 \end{document}

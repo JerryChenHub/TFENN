@@ -2,6 +2,8 @@
 
 全部 31 个模型使用同一份 400000 样本数据、同一 Train Validation Test 划分、500 epoch、batch size 10000 和相同随机种子。结果均取 Validation normalized MSE 最低的 checkpoint。表中误差均为 relative RMSE percent。全部模型的 D6 协变性检查均通过。
 
+历史表中的 `A5`、`B2` 表示具有 5 或 2 个 typed channels 的 A/B stage，而不是 stage 编号；`trunk N` 表示 Gate hidden width。G00 的历史 `GroupConv` 标签实际指外部 model-level \(D_6\times D_6\) Reynolds averaging，不是 TFENN group-convolution layer。
+
 ## 每个模型的结构、测试目的与结果
 
 ```text

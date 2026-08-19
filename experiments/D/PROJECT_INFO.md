@@ -15,7 +15,7 @@ The group aware split contained 320,000 Train, 40,000 Validation, and 40,000 Tes
 
 ## Purpose
 
-Experiment 1 tested source visibility, raw bypass, and typed residual policies. Experiment 2 tested A and B ordering, channel placement, path families, and polynomial degree. Experiment 3 tested Invariant Gate coefficient functions, head parameterization, descriptor transforms, trunk width, depth, and residual structure.
+Experiment 1 tested source visibility, raw-covariant reread, same-TypeKey concat-project bypass, and separately configured additive skip variants. Experiment 2 tested A and B ordering, channel placement, path families, and polynomial degree. Experiment 3 tested Invariant Gate coefficient functions, head parameterization, descriptor transforms, trunk width/depth, and explicit additive skip variants.
 
 ## Protocol and time
 

@@ -18,7 +18,7 @@ The split manifest hash was `3a64eb6ac96805aad4fe41ef1fd44a0cdc2417d193f8c085224
 ## 2. Concise purpose
 
 1. E0 compared ordinary MLP, model level group averaging, and selected earlier reference networks.
-2. E1 tested raw input reuse, source visibility, and bypass behavior.
+2. E1 tested raw-covariant reread, source visibility, and same-TypeKey bypass behavior.
 3. E2 tested synchronous dual stream A and B exchange patterns.
 4. E3 tested covariant path families, gate width, and path ablations.
 5. E4 tested compact structured mechanisms near an 8000 parameter budget.
