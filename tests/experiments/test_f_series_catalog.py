@@ -11,9 +11,10 @@ from experiments.benzene_pair.f_series.catalog import (
     F0_SPECS,
     F1_SPECS,
     F2_SPECS,
-    F3_SPECS,
+    EXECUTION_SHARD_SPECS,
     F_SERIES_SPECS,
     get_experiment_specs,
+    get_execution_shard_specs,
     get_model_spec,
 )
 from experiments.benzene_pair.f_series.model_factory import (
@@ -23,28 +24,49 @@ from experiments.benzene_pair.f_series.model_factory import (
 
 
 def test_catalog_has_one_control_and_one_hundred_paired_strict_models() -> None:
-    assert tuple(map(len, (F0_SPECS, F1_SPECS, F2_SPECS, F3_SPECS))) == (
-        1,
-        34,
-        32,
-        34,
-    )
+    assert tuple(map(len, (F0_SPECS, F1_SPECS, F2_SPECS))) == (1, 50, 50)
     assert len(F_SERIES_SPECS) == 101
     assert tuple(spec.model_id for spec in F0_SPECS) == ("F100",)
-    assert tuple(spec.model_id for spec in F1_SPECS) == (
-        *(f"F{index:03d}" for index in range(101, 118)),
-        *(f"F{index:03d}" for index in range(201, 218)),
+    assert tuple(spec.model_id for spec in F1_SPECS) == tuple(
+        f"F{index:03d}" for index in range(101, 151)
     )
-    assert tuple(spec.model_id for spec in F2_SPECS) == (
-        *(f"F{index:03d}" for index in range(118, 134)),
-        *(f"F{index:03d}" for index in range(218, 234)),
+    assert tuple(spec.model_id for spec in F2_SPECS) == tuple(
+        f"F{index:03d}" for index in range(201, 251)
     )
-    assert tuple(spec.model_id for spec in F3_SPECS) == (
-        *(f"F{index:03d}" for index in range(134, 151)),
-        *(f"F{index:03d}" for index in range(234, 251)),
+    assert [len(EXECUTION_SHARD_SPECS[index]) for index in range(5)] == [
+        1,
+        25,
+        25,
+        25,
+        25,
+    ]
+    shard_ids = tuple(
+        spec.model_id
+        for shard in EXECUTION_SHARD_SPECS.values()
+        for spec in shard
     )
-    assert get_model_spec("f250") is F3_SPECS[-1]
+    assert len(shard_ids) == len(set(shard_ids)) == 101
+    assert set(shard_ids) == {spec.model_id for spec in F_SERIES_SPECS}
+    assert tuple(spec.model_id for spec in get_execution_shard_specs("f1a")) == tuple(
+        f"F{index:03d}" for index in range(101, 126)
+    )
+    assert tuple(spec.model_id for spec in get_execution_shard_specs("f2b")) == tuple(
+        f"F{index:03d}" for index in range(226, 251)
+    )
+    assert get_model_spec("f250") is F2_SPECS[-1]
     assert get_experiment_specs("experiment_2") is F2_SPECS
+    assert all(
+        spec.experiment_id == 1
+        and spec.options["invariant_policy"] == "RAW_LOCAL_MIX"
+        and spec.descriptor_mask == "full"
+        for spec in F1_SPECS
+    )
+    assert all(
+        spec.experiment_id == 2
+        and spec.options["invariant_policy"] == "RAW_ONLY_MASK"
+        and spec.descriptor_mask == "raw_only"
+        for spec in F2_SPECS
+    )
     for spec in F_SERIES_SPECS:
         json.dumps(spec.as_dict(), allow_nan=False)
 
@@ -55,12 +77,24 @@ def test_every_f1_model_has_one_raw_only_pair_with_identical_topology() -> None:
     for first in strict:
         pair = get_model_spec(first.pair_model_id or "")
         assert pair.pair_model_id == first.model_id
-        assert pair.experiment_id == first.experiment_id
+        assert {pair.experiment_id, first.experiment_id} == {1, 2}
+        assert pair.execution_shard_id != first.execution_shard_id
         assert pair.options["topology"] == first.options["topology"]
         assert pair.options["channels"] == first.options["channels"]
         assert pair.options["stages"] == first.options["stages"]
         assert pair.planned_parameter_count == first.planned_parameter_count
         assert {pair.descriptor_mask, first.descriptor_mask} == {"full", "raw_only"}
+        for stage in first.options["stages"]:
+            hidden_parents = tuple(
+                source
+                for source in stage["source_names"]
+                if source not in {"x", "r"}
+            )
+            assert stage["invariant_source_names"] == (
+                "x",
+                "r",
+                *hidden_parents,
+            )
 
 
 def test_three_strict_topologies_encode_only_declared_edges() -> None:
@@ -97,10 +131,17 @@ def test_three_strict_topologies_encode_only_declared_edges() -> None:
             tuple(stage["source_names"] for stage in stages)
             == expected_sources[topology]
         )
-        assert all(
-            stage["source_names"] == stage["covariant_required_source_names"]
-            for stage in stages
-        )
+        for stage in stages:
+            hidden_parents = tuple(
+                source
+                for source in stage["source_names"]
+                if source not in {"x", "r"}
+            )
+            assert stage["invariant_source_names"] == (
+                "x",
+                "r",
+                *hidden_parents,
+            )
         config = strict_config_from_spec(spec)
         assert config.descriptor_mask == "full"
         assert config.gate_width == 8

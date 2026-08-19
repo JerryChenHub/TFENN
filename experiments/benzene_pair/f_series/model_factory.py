@@ -27,6 +27,10 @@ def strict_config_from_spec(spec: FModelSpec) -> StrictDualStreamFlowConfig:
         raise TypeError("spec must be an FModelSpec")
     if spec.family != "strict_flow":
         raise TypeError("only strict flow models have a strict config")
+    if spec.options.get("path_policy") != "NO_RAW_MIXED":
+        raise ValueError("F strict models require the E311 NO_RAW_MIXED path policy")
+    if int(spec.options.get("gate_width", -1)) != 8:
+        raise ValueError("F strict models require Gate width eight")
     stages = tuple(
         StrictFlowStageConfig.from_dict(dict(value)) for value in spec.options["stages"]
     )

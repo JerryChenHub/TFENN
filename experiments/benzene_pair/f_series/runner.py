@@ -1,4 +1,4 @@
-"""Run the four F series studies with one strict shared split."""
+"""Run two paired F studies through five independent execution shards."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import gc
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,14 +25,14 @@ from experiments.benzene_pair.comet_logging import NullCometTrialLogger
 from experiments.benzene_pair.f_series.catalog import (
     FModelSpec,
     F_SERIES_SPECS,
-    get_experiment_specs,
+    get_execution_shard_specs,
     get_model_spec,
 )
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_STUDY_ROOT = (
-    REPOSITORY_ROOT / "experiments" / "benzene_pair" / "runs" / "f_series_400k_v1"
+    REPOSITORY_ROOT / "experiments" / "benzene_pair" / "runs" / "f_series_400k_v2"
 )
 E311_SPLIT_INDICES_SHA256 = (
     "50e6bf0e32c1bb9b0bddb689097a4a38a5d74a5bcf12b0fc8471f6b1f4cf50b1"
@@ -41,7 +42,8 @@ E311_SPLIT_MANIFEST_HASH = (
 )
 F_STUDY_METADATA = {
     "concurrent_run": True,
-    "shared_gpu_process_count": 4,
+    "tmux_session_count": 5,
+    "execution_shard_counts": [1, 25, 25, 25, 25],
     "plan_document_name": "EXPERIMENT_PLAN.md",
     "planned_model_count": 101,
     "executed_model_count": 101,
@@ -60,48 +62,68 @@ def _json_value(value: Any) -> Any:
 
 
 @dataclass(frozen=True, slots=True)
-class ExperimentDefinition:
-    experiment_id: int
+class ExecutionShardDefinition:
+    shard_id: int
+    key: str
+    tmux_session_name: str
     directory_name: str
     comet_project: str
     purpose: str
 
 
-EXPERIMENTS = {
-    0: ExperimentDefinition(
+EXECUTION_SHARDS = {
+    0: ExecutionShardDefinition(
         0,
-        "f0_e311_control",
-        "tfenn_f_series_f0_e311_control",
+        "control",
+        "tfenn_f_control",
+        "shard_0_control",
+        "tfenn_f_series",
         "exact E311 historical control",
     ),
-    1: ExperimentDefinition(
+    1: ExecutionShardDefinition(
         1,
-        "f1_t1_two_exchange",
-        "tfenn_f_series_t1_two_exchange",
-        "T1 paired full local and raw only descriptor study",
+        "f1a",
+        "tfenn_f1_a",
+        "shard_1_f1_a",
+        "tfenn_f_series",
+        "F1 models F101 through F125",
     ),
-    2: ExperimentDefinition(
+    2: ExecutionShardDefinition(
         2,
-        "f2_t2_early_injection",
-        "tfenn_f_series_t2_early_injection",
-        "T2 paired full local and raw only descriptor study",
+        "f1b",
+        "tfenn_f1_b",
+        "shard_2_f1_b",
+        "tfenn_f_series",
+        "F1 models F126 through F150",
     ),
-    3: ExperimentDefinition(
+    3: ExecutionShardDefinition(
         3,
-        "f3_t3_late_fusion",
-        "tfenn_f_series_t3_late_fusion",
-        "T3 paired full local and raw only descriptor study",
+        "f2a",
+        "tfenn_f2_a",
+        "shard_3_f2_a",
+        "tfenn_f_series",
+        "F2 models F201 through F225",
+    ),
+    4: ExecutionShardDefinition(
+        4,
+        "f2b",
+        "tfenn_f2_b",
+        "shard_4_f2_b",
+        "tfenn_f_series",
+        "F2 models F226 through F250",
     ),
 }
 DEFAULT_CONFIG_PATHS = {
-    experiment_id: Path(__file__).resolve().parent / f"experiment_{experiment_id}.json"
-    for experiment_id in EXPERIMENTS
+    shard_id: Path(__file__).resolve().parent / f"shard_{shard_id}.json"
+    for shard_id in EXECUTION_SHARDS
 }
-EXPECTED_EXPERIMENT_COUNTS = {0: 1, 1: 34, 2: 32, 3: 34}
+EXPECTED_SHARD_COUNTS = {0: 1, 1: 25, 2: 25, 3: 25, 4: 25}
 
 
 RESULT_FIELDS = (
     "model_id",
+    "experiment_id",
+    "execution_shard_id",
     "topology",
     "invariant_policy",
     "pair_model_id",
@@ -134,52 +156,65 @@ RESULT_FIELDS = (
     "test_relative_force_norm_max",
     "d6_status",
     "gate_audit_path",
+    "invariant_gate_parameter_path",
     "duration_seconds",
     "error_type",
     "error_message",
 )
 
 
-def _experiment(value: int) -> ExperimentDefinition:
+def _shard(value: int | str) -> ExecutionShardDefinition:
+    if isinstance(value, str):
+        normalized = value.lower()
+        aliases = {item.key: key for key, item in EXECUTION_SHARDS.items()}
+        if normalized in aliases:
+            value = aliases[normalized]
     try:
-        return EXPERIMENTS[int(value)]
+        return EXECUTION_SHARDS[int(value)]
     except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("experiment must be zero through three") from error
+        raise ValueError("execution shard must be control, f1a, f1b, f2a, or f2b") from error
 
 
 def _shared_split_directory(study_root: str | Path) -> Path:
     return Path(study_root).resolve() / "shared_split"
 
 
+def _execution_directory(
+    study_root: str | Path,
+    shard: ExecutionShardDefinition,
+) -> Path:
+    return Path(study_root).resolve() / "execution_shards" / shard.directory_name
+
+
 def make_config(
-    experiment_id: int,
+    shard_id: int | str,
     *,
     study_root: str | Path = DEFAULT_STUDY_ROOT,
 ) -> common.SweepConfig:
     """Build one fixed four hundred thousand sample F protocol."""
-    experiment = _experiment(experiment_id)
-    value = json.loads(DEFAULT_CONFIG_PATHS[experiment_id].read_text(encoding="utf_8"))
+    shard = _shard(shard_id)
+    value = json.loads(DEFAULT_CONFIG_PATHS[shard.shard_id].read_text(encoding="utf_8"))
     if value.get("schema_name") != "tfenn_benzene_pair_f_series":
         raise ValueError("unexpected F series config schema")
     if value.get("schema_version") != 1:
         raise ValueError("unexpected F series config version")
-    if int(value.get("experiment_id", -1)) != experiment_id:
-        raise ValueError("F config experiment does not match")
-    if value.get("study_directory_name") != experiment.directory_name:
-        raise ValueError("F study directory does not match")
+    if int(value.get("execution_shard_id", -1)) != shard.shard_id:
+        raise ValueError("F config execution shard does not match")
+    if value.get("execution_directory_name") != shard.directory_name:
+        raise ValueError("F execution directory does not match")
     expected_models = tuple(
-        item.model_id for item in get_experiment_specs(experiment_id)
+        item.model_id for item in get_execution_shard_specs(shard.shard_id)
     )
     if tuple(value.get("model_ids", ())) != expected_models:
         raise ValueError("F config model ids do not match the catalog")
-    for name in ("concurrent_run", "shared_gpu_process_count"):
+    for name in ("concurrent_run", "tmux_session_count"):
         if value.get(name) != F_STUDY_METADATA[name]:
             raise ValueError(f"F config {name} does not match")
     config = common.SweepConfig(
         shard_paths=tuple(
             (REPOSITORY_ROOT / str(item)).resolve() for item in value["shard_paths"]
         ),
-        study_directory=Path(study_root).resolve() / experiment.directory_name,
+        study_directory=Path(study_root).resolve(),
         epochs=int(value["epochs"]),
         effective_batch_size=int(value["effective_batch_size"]),
         micro_batch_size=int(value["micro_batch_size"]),
@@ -214,7 +249,7 @@ def make_config(
         raise ValueError("F series requires batch size ten thousand")
     if config.expected_sample_count != 400_000:
         raise ValueError("F series requires four hundred thousand samples")
-    if config.comet.project_name != experiment.comet_project:
+    if config.comet.project_name != shard.comet_project:
         raise ValueError("F Comet project does not match")
     return config
 
@@ -343,7 +378,7 @@ def _covariant_unit_check(model: nn.Module) -> dict[str, Any]:
     return {
         "forward_finite": True,
         "gradient_finite": True,
-        "all_trainable_parameters_connected": True,
+        "all_trainable_parameter_tensors_have_gradients": True,
         "trainable_tensor_count": len(trainable),
         "gradient_tensor_count": len(gradients),
         "dtype": str(dtype),
@@ -739,12 +774,13 @@ def _load_shared_split(
 
 
 def _select_specs(
-    experiment_id: int,
+    shard_id: int | str,
     values: Sequence[str],
 ) -> tuple[FModelSpec, ...]:
-    available = tuple(get_experiment_specs(experiment_id))
-    if len(available) != EXPECTED_EXPERIMENT_COUNTS[experiment_id]:
-        raise RuntimeError("F experiment size changed")
+    shard = _shard(shard_id)
+    available = tuple(get_execution_shard_specs(shard.shard_id))
+    if len(available) != EXPECTED_SHARD_COUNTS[shard.shard_id]:
+        raise RuntimeError("F execution shard size changed")
     if not values:
         return available
     allowed = {item.model_id: item for item in available}
@@ -752,7 +788,7 @@ def _select_specs(
     for value in values:
         key = str(value).upper()
         if key not in allowed:
-            raise ValueError(f"model {value} is outside experiment {experiment_id}")
+            raise ValueError(f"model {value} is outside execution shard {shard.key}")
         selected.append(allowed[key])
     if len({item.model_id for item in selected}) != len(selected):
         raise ValueError("model selection contains duplicates")
@@ -776,6 +812,8 @@ def _result_row(config: common.SweepConfig, spec: FModelSpec) -> dict[str, Any]:
     actual = summary.get("model", {}).get("parameter_count", "")
     return {
         "model_id": spec.model_id,
+        "experiment_id": spec.experiment_id,
+        "execution_shard_id": spec.execution_shard_id,
         "topology": spec.options.get("topology", ""),
         "invariant_policy": spec.options.get("invariant_policy", ""),
         "pair_model_id": spec.pair_model_id or "",
@@ -822,6 +860,10 @@ def _result_row(config: common.SweepConfig, spec: FModelSpec) -> dict[str, Any]:
             else "failed"
         ),
         "gate_audit_path": audit.get("artifact_path", ""),
+        "invariant_gate_parameter_path": audit.get(
+            "invariant_gate_parameter_path",
+            "",
+        ),
         "duration_seconds": summary.get("runtime", {}).get("duration_seconds", ""),
         "error_type": error.get("exception_type", ""),
         "error_message": error.get("message", ""),
@@ -831,10 +873,17 @@ def _result_row(config: common.SweepConfig, spec: FModelSpec) -> dict[str, Any]:
 def _refresh_results(
     config: common.SweepConfig,
     specs: Sequence[FModelSpec],
+    *,
+    output_directory: str | Path | None = None,
 ) -> Path:
-    config.study_directory.mkdir(parents=True, exist_ok=True)
+    directory = (
+        config.study_directory
+        if output_directory is None
+        else Path(output_directory).resolve()
+    )
+    directory.mkdir(parents=True, exist_ok=True)
     rows = [_result_row(config, spec) for spec in specs]
-    path = config.study_directory / "results.csv"
+    path = directory / "results.csv"
     partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
     with partial.open("w", encoding="utf_8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
@@ -864,7 +913,7 @@ def _refresh_results(
             }
         )
     common._atomic_json(
-        config.study_directory / "comparison.json",
+        directory / "comparison.json",
         {
             "schema_name": "tfenn_f_series_comparison",
             "schema_version": 1,
@@ -888,8 +937,8 @@ def _selected_model_audit(**values: Any) -> Mapping[str, Any]:
 
 
 def run_study(arguments: argparse.Namespace) -> int:
-    experiment = _experiment(arguments.experiment)
-    config = make_config(experiment.experiment_id, study_root=arguments.study_root)
+    shard = _shard(arguments.shard)
+    config = make_config(shard.shard_id, study_root=arguments.study_root)
     if not os.environ.get("COMET_API_KEY", "").strip():
         raise RuntimeError("COMET_API_KEY must be set for a formal F series run")
     preflight = _require_preflight(arguments.study_root)
@@ -897,18 +946,19 @@ def run_study(arguments: argparse.Namespace) -> int:
     device = common._resolve_device(arguments.device or config.device)
     all_specs = tuple(
         _enriched_spec(spec, preflight)
-        for spec in get_experiment_specs(experiment.experiment_id)
+        for spec in get_execution_shard_specs(shard.shard_id)
     )
     selected = tuple(
         _enriched_spec(spec, preflight)
-        for spec in _select_specs(experiment.experiment_id, arguments.model)
+        for spec in _select_specs(shard.shard_id, arguments.model)
     )
     _split, split_manifest = _load_shared_split(arguments.study_root)
     manifest = {
         "schema_name": "tfenn_f_series_study",
         "schema_version": 1,
-        "experiment_id": experiment.experiment_id,
-        "experiment_purpose": experiment.purpose,
+        "execution_shard_id": shard.shard_id,
+        "execution_shard_key": shard.key,
+        "execution_purpose": shard.purpose,
         "model_count": len(all_specs),
         "models": [item.as_dict() for item in all_specs],
         "config": config.as_dict(device=device),
@@ -922,11 +972,14 @@ def run_study(arguments: argparse.Namespace) -> int:
         **study_metadata,
     }
     manifest["study_hash"] = common._canonical_sha256(manifest)
-    manifest_path = config.study_directory / "manifest.json"
+    execution_directory = _execution_directory(arguments.study_root, shard)
+    execution_directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = execution_directory / "manifest.json"
     if manifest_path.is_file() and common._load_json(manifest_path) != manifest:
         raise RuntimeError("existing F series manifest does not match this run")
     common._atomic_json(manifest_path, manifest)
-    _refresh_results(config, all_specs)
+    _refresh_results(config, all_specs, output_directory=execution_directory)
+    failed_models: list[str] = []
     for spec in selected:
         paths = common.TrialPaths.create(
             config.study_directory / "models" / spec.model_id
@@ -955,8 +1008,6 @@ def run_study(arguments: argparse.Namespace) -> int:
             "-m",
             "experiments.benzene_pair.f_series.runner",
             "trial",
-            "--experiment",
-            str(experiment.experiment_id),
             "--study_root",
             str(Path(arguments.study_root).resolve()),
             "--model",
@@ -975,19 +1026,27 @@ def run_study(arguments: argparse.Namespace) -> int:
                 stderr=stderr,
                 check=False,
             )
-        _refresh_results(config, all_specs)
+        _refresh_results(config, all_specs, output_directory=execution_directory)
         if process.returncode == 130:
             return 130
-    _refresh_results(config, all_specs)
+        if process.returncode:
+            failed_models.append(spec.model_id)
+    _refresh_results(config, all_specs, output_directory=execution_directory)
+    if failed_models:
+        print(
+            json.dumps(
+                {"status": "error", "failed_models": failed_models},
+                allow_nan=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
 def run_trial_command(arguments: argparse.Namespace) -> int:
-    experiment = _experiment(arguments.experiment)
-    config = make_config(experiment.experiment_id, study_root=arguments.study_root)
     spec = get_model_spec(arguments.model)
-    if spec not in tuple(get_experiment_specs(experiment.experiment_id)):
-        raise ValueError("model does not belong to the selected experiment")
+    config = make_config(spec.execution_shard_id, study_root=arguments.study_root)
     preflight = (
         None
         if arguments.sample_limit is not None
@@ -1063,18 +1122,19 @@ def run_trial_command(arguments: argparse.Namespace) -> int:
 
 
 def run_smoke(arguments: argparse.Namespace) -> int:
-    experiment = _experiment(arguments.experiment)
-    config = make_config(experiment.experiment_id, study_root=arguments.study_root)
+    shard = _shard(arguments.shard)
+    config = make_config(shard.shard_id, study_root=arguments.study_root)
     device = common._resolve_device(arguments.device or config.device)
     defaults = {
         0: ("F100",),
-        1: ("F101", "F201", "F114"),
-        2: ("F118", "F218", "F133"),
-        3: ("F134", "F234", "F150"),
+        1: ("F101", "F108", "F125"),
+        2: ("F126", "F134", "F150"),
+        3: ("F201", "F208", "F225"),
+        4: ("F226", "F234", "F250"),
     }
     selected = _select_specs(
-        experiment.experiment_id,
-        arguments.model or defaults[experiment.experiment_id],
+        shard.shard_id,
+        arguments.model or defaults[shard.shard_id],
     )
     smoke_root = (
         Path(arguments.output_directory).resolve()
@@ -1088,8 +1148,6 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             "-m",
             "experiments.benzene_pair.f_series.runner",
             "trial",
-            "--experiment",
-            str(experiment.experiment_id),
             "--study_root",
             str(Path(arguments.study_root).resolve()),
             "--model",
@@ -1111,7 +1169,43 @@ def run_smoke(arguments: argparse.Namespace) -> int:
 
 
 def run_prepare(arguments: argparse.Namespace) -> int:
-    make_config(0, study_root=arguments.study_root)
+    configs = tuple(
+        make_config(shard_id, study_root=arguments.study_root)
+        for shard_id in range(5)
+    )
+    protocol_fields = (
+        "epochs",
+        "effective_batch_size",
+        "micro_batch_size",
+        "learning_rate",
+        "weight_decay",
+        "scheduler_step_size",
+        "scheduler_gamma",
+        "validation_every",
+        "split_seed",
+        "model_seed",
+        "shuffle_seed",
+        "split_fractions",
+        "dtype",
+        "threads",
+        "symmetry_tolerance",
+        "symmetry_probe_count",
+        "expected_sample_count",
+        "expected_dataset_revision",
+        "expected_opls_version",
+        "enable_tf32",
+        "relative_force_norm_sample_count",
+        "relative_force_norm_seed",
+        "schema_name",
+        "schema_version",
+    )
+    reference_protocol = tuple(getattr(configs[0], name) for name in protocol_fields)
+    if any(
+        tuple(getattr(config, name) for name in protocol_fields)
+        != reference_protocol
+        for config in configs[1:]
+    ) or any(config.shard_paths != configs[0].shard_paths for config in configs[1:]):
+        raise RuntimeError("F execution shards do not share one training protocol")
     if arguments.reference_split_directory is None:
         _split, manifest = _load_shared_split(arguments.study_root)
     else:
@@ -1144,6 +1238,122 @@ def run_prepare(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def run_aggregate(arguments: argparse.Namespace) -> int:
+    """Build one cross-shard table and the fifty paired F1/F2 contrasts."""
+    config = make_config(0, study_root=arguments.study_root)
+    path = _refresh_results(
+        config,
+        F_SERIES_SPECS,
+        output_directory=Path(arguments.study_root).resolve(),
+    )
+    print(json.dumps({"status": "complete", "results": str(path)}))
+    return 0
+
+
+def _tmux_devices(values: Sequence[str]) -> tuple[str, ...]:
+    devices = tuple(str(value) for value in values)
+    if not devices:
+        visible = torch.cuda.device_count()
+        if visible < 5:
+            raise ValueError(
+                "automatic tmux launch requires five visible CUDA devices; "
+                "provide one --device to share intentionally or five explicit "
+                "--device mappings"
+            )
+        return tuple(f"cuda:{index}" for index in range(5))
+    if len(devices) == 1:
+        return devices * 5
+    if len(devices) != 5:
+        raise ValueError("provide either one device or exactly five devices")
+    return devices
+
+
+def tmux_launch_commands(
+    *,
+    study_root: str | Path,
+    devices: Sequence[str] = (),
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return the five tmux commands without changing experimental semantics."""
+    resolved_devices = _tmux_devices(devices)
+    root = str(Path(study_root).resolve())
+    result = []
+    for shard_id, device in zip(range(5), resolved_devices):
+        shard = EXECUTION_SHARDS[shard_id]
+        job = shlex.join(
+            (
+                sys.executable,
+                "-m",
+                "experiments.benzene_pair.f_series.runner",
+                "run",
+                "--shard",
+                shard.key,
+                "--study_root",
+                root,
+                "--device",
+                device,
+            )
+        )
+        pane_command = (
+            "if [ -z \"${COMET_API_KEY:-}\" ]; then "
+            "echo 'COMET_API_KEY is unavailable inside tmux'; status=1; "
+            f"else {job}; status=$?; fi; "
+            f"echo 'F execution shard {shard.key} exited' $status; "
+            "exec \"${SHELL:-/bin/bash}\""
+        )
+        command = (
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            shard.tmux_session_name,
+            "-c",
+            str(REPOSITORY_ROOT),
+            pane_command,
+        )
+        result.append((shard.tmux_session_name, command))
+    return tuple(result)
+
+
+def run_launch_tmux(arguments: argparse.Namespace) -> int:
+    commands = tmux_launch_commands(
+        study_root=arguments.study_root,
+        devices=arguments.device,
+    )
+    if arguments.dry_run:
+        print(
+            json.dumps(
+                [
+                    {"session": session, "command": shlex.join(command)}
+                    for session, command in commands
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    if shutil.which("tmux") is None:
+        raise RuntimeError("tmux is not installed")
+    if not os.environ.get("COMET_API_KEY", "").strip():
+        raise RuntimeError("COMET_API_KEY must be set before launching tmux")
+    _require_preflight(arguments.study_root)
+    _load_shared_split(arguments.study_root)
+    existing = []
+    for session, _command in commands:
+        check = subprocess.run(
+            ("tmux", "has-session", "-t", f"={session}"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if check.returncode == 0:
+            existing.append(session)
+    if existing:
+        raise RuntimeError(f"tmux sessions already exist: {tuple(existing)}")
+    for session, command in commands:
+        subprocess.run(command, cwd=REPOSITORY_ROOT, check=True)
+        print(json.dumps({"status": "started", "session": session}))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1173,16 +1383,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run = commands.add_parser("run")
     run.add_argument(
-        "--experiment", type=int, choices=tuple(EXPERIMENTS), required=True
+        "--shard",
+        choices=tuple(item.key for item in EXECUTION_SHARDS.values()),
+        required=True,
     )
     run.add_argument("--study_root", type=Path, default=DEFAULT_STUDY_ROOT)
     run.add_argument("--device", default=None)
     run.add_argument("--model", action="append", default=[])
     run.set_defaults(handler=run_study)
     trial = commands.add_parser("trial")
-    trial.add_argument(
-        "--experiment", type=int, choices=tuple(EXPERIMENTS), required=True
-    )
     trial.add_argument("--study_root", type=Path, default=DEFAULT_STUDY_ROOT)
     trial.add_argument("--model", required=True)
     trial.add_argument("--device", default=None)
@@ -1193,7 +1402,9 @@ def build_parser() -> argparse.ArgumentParser:
     trial.set_defaults(handler=run_trial_command)
     smoke = commands.add_parser("smoke")
     smoke.add_argument(
-        "--experiment", type=int, choices=tuple(EXPERIMENTS), required=True
+        "--shard",
+        choices=tuple(item.key for item in EXECUTION_SHARDS.values()),
+        required=True,
     )
     smoke.add_argument("--study_root", type=Path, default=DEFAULT_STUDY_ROOT)
     smoke.add_argument("--device", default=None)
@@ -1202,6 +1413,19 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--sample_limit", type=int, default=16000)
     smoke.add_argument("--output_directory", type=Path, default=None)
     smoke.set_defaults(handler=run_smoke)
+    aggregate = commands.add_parser("aggregate")
+    aggregate.add_argument("--study_root", type=Path, default=DEFAULT_STUDY_ROOT)
+    aggregate.set_defaults(handler=run_aggregate)
+    tmux = commands.add_parser("launch-tmux")
+    tmux.add_argument("--study_root", type=Path, default=DEFAULT_STUDY_ROOT)
+    tmux.add_argument(
+        "--device",
+        action="append",
+        default=[],
+        help="repeat five times for a per-session device mapping",
+    )
+    tmux.add_argument("--dry-run", action="store_true")
+    tmux.set_defaults(handler=run_launch_tmux)
     return parser
 
 

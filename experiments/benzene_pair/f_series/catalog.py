@@ -1,4 +1,4 @@
-"""Define the four F series experiment catalogs."""
+"""Define the F1/F2 science catalogs and independent execution shards."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ __all__ = [
     "F0_SPECS",
     "F1_SPECS",
     "F2_SPECS",
-    "F3_SPECS",
+    "EXECUTION_SHARD_SPECS",
     "get_experiment_specs",
+    "get_science_experiment_specs",
+    "get_execution_shard_specs",
     "get_model_spec",
 ]
 
@@ -44,6 +46,7 @@ class FModelSpec:
 
     model_id: str
     experiment_id: int
+    execution_shard_id: int
     family: str
     architecture_name: str
     description: str
@@ -53,10 +56,18 @@ class FModelSpec:
     options: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.experiment_id not in range(4):
-            raise ValueError("experiment id must be zero through three")
+        if self.experiment_id not in range(3):
+            raise ValueError("science experiment id must be zero through two")
+        if self.execution_shard_id not in range(5):
+            raise ValueError("execution shard id must be zero through four")
         if not self.model_id.startswith("F") or len(self.model_id) != 4:
             raise ValueError("model id must use the F three digit form")
+        number = int(self.model_id[1:])
+        expected_experiment = 0 if number == 100 else 1 if number < 200 else 2
+        if self.experiment_id != expected_experiment:
+            raise ValueError("model id and science experiment id disagree")
+        if self.execution_shard_id != _execution_shard_id(number):
+            raise ValueError("model id and execution shard id disagree")
         if self.planned_parameter_count < 1:
             raise ValueError("planned parameter count must be positive")
         object.__setattr__(self, "options", _freeze(self.options))
@@ -83,6 +94,7 @@ class FModelSpec:
         value = {
             "model_id": self.model_id,
             "experiment_id": self.experiment_id,
+            "execution_shard_id": self.execution_shard_id,
             "family": self.family,
             "architecture_name": self.architecture_name,
             "description": self.description,
@@ -111,9 +123,6 @@ def _stage(
         "invariant_source_names": ("x", "r", *hidden),
         "channels": int(channels),
         "execution_level": int(execution_level),
-        "trunk_width": 8,
-        "skip_policy": "legacy",
-        "covariant_required_source_names": tuple(sources),
     }
 
 
@@ -213,24 +222,39 @@ _T3_ROWS = (
 )
 
 
+def _execution_shard_id(model_number: int) -> int:
+    if model_number == 100:
+        return 0
+    if 101 <= model_number <= 125:
+        return 1
+    if 126 <= model_number <= 150:
+        return 2
+    if 201 <= model_number <= 225:
+        return 3
+    if 226 <= model_number <= 250:
+        return 4
+    raise ValueError(f"model number {model_number} is outside the F catalog")
+
+
 def _strict_specs(
     topology: str,
-    experiment_id: int,
     rows: Sequence[tuple[int, tuple[int, ...], str, int]],
-) -> tuple[FModelSpec, ...]:
-    result: list[FModelSpec] = []
+) -> tuple[tuple[FModelSpec, ...], tuple[FModelSpec, ...]]:
+    f1: list[FModelSpec] = []
+    f2: list[FModelSpec] = []
     for number, channels, changed_node, count in rows:
         f1_id = f"F{number:03d}"
         f2_id = f"F{number + 100:03d}"
         stages = _topology_stages(topology, channels)
-        for model_id, policy, mask, pair_id in (
-            (f1_id, "FULL_LOCAL_RAW_HIDDEN", "full", f2_id),
-            (f2_id, "RAW_ONLY_MASK", "raw_only", f1_id),
+        for collection, model_id, experiment_id, policy, mask, pair_id in (
+            (f1, f1_id, 1, "RAW_LOCAL_MIX", "full", f2_id),
+            (f2, f2_id, 2, "RAW_ONLY_MASK", "raw_only", f1_id),
         ):
-            result.append(
+            collection.append(
                 FModelSpec(
                     model_id=model_id,
                     experiment_id=experiment_id,
+                    execution_shard_id=_execution_shard_id(int(model_id[1:])),
                     family="strict_flow",
                     architecture_name=f"{topology}_{policy}",
                     description=(
@@ -255,13 +279,14 @@ def _strict_specs(
                     },
                 )
             )
-    return tuple(result)
+    return tuple(f1), tuple(f2)
 
 
 F0_SPECS = (
     FModelSpec(
         model_id="F100",
         experiment_id=0,
+        execution_shard_id=0,
         family="reference",
         architecture_name="E311",
         description="Exact E311 historical control",
@@ -278,24 +303,34 @@ F0_SPECS = (
         },
     ),
 )
+_T1_F1, _T1_F2 = _strict_specs("T1", _T1_ROWS)
+_T2_F1, _T2_F2 = _strict_specs("T2", _T2_ROWS)
+_T3_F1, _T3_F2 = _strict_specs("T3", _T3_ROWS)
 F1_SPECS = tuple(
-    sorted(_strict_specs("T1", 1, _T1_ROWS), key=lambda spec: spec.model_id)
+    sorted((*_T1_F1, *_T2_F1, *_T3_F1), key=lambda spec: spec.model_id)
 )
 F2_SPECS = tuple(
-    sorted(_strict_specs("T2", 2, _T2_ROWS), key=lambda spec: spec.model_id)
-)
-F3_SPECS = tuple(
-    sorted(_strict_specs("T3", 3, _T3_ROWS), key=lambda spec: spec.model_id)
+    sorted((*_T1_F2, *_T2_F2, *_T3_F2), key=lambda spec: spec.model_id)
 )
 F_SERIES_SPECS = tuple(
     sorted(
-        (*F0_SPECS, *F1_SPECS, *F2_SPECS, *F3_SPECS),
+        (*F0_SPECS, *F1_SPECS, *F2_SPECS),
         key=lambda spec: spec.model_id,
     )
 )
 
 _BY_ID = MappingProxyType({spec.model_id: spec for spec in F_SERIES_SPECS})
-_BY_EXPERIMENT = MappingProxyType({0: F0_SPECS, 1: F1_SPECS, 2: F2_SPECS, 3: F3_SPECS})
+_BY_EXPERIMENT = MappingProxyType({0: F0_SPECS, 1: F1_SPECS, 2: F2_SPECS})
+EXECUTION_SHARD_SPECS = MappingProxyType(
+    {
+        shard: tuple(
+            spec
+            for spec in F_SERIES_SPECS
+            if spec.execution_shard_id == shard
+        )
+        for shard in range(5)
+    }
+)
 
 
 def get_model_spec(model_id: str) -> FModelSpec:
@@ -305,11 +340,11 @@ def get_model_spec(model_id: str) -> FModelSpec:
         raise KeyError(f"unknown F model {model_id}") from error
 
 
-def get_experiment_specs(experiment: int | str) -> tuple[FModelSpec, ...]:
+def get_science_experiment_specs(experiment: int | str) -> tuple[FModelSpec, ...]:
     value: int
     if isinstance(experiment, str):
         normalized = experiment.lower()
-        for prefix in ("experiment_", "f", "t"):
+        for prefix in ("experiment_", "f"):
             if normalized.startswith(prefix):
                 normalized = normalized[len(prefix) :]
                 break
@@ -320,3 +355,35 @@ def get_experiment_specs(experiment: int | str) -> tuple[FModelSpec, ...]:
         return _BY_EXPERIMENT[value]
     except KeyError as error:
         raise KeyError(f"unknown F experiment {experiment}") from error
+
+
+def get_experiment_specs(experiment: int | str) -> tuple[FModelSpec, ...]:
+    """Backward-compatible alias for the scientific F0/F1/F2 grouping."""
+    return get_science_experiment_specs(experiment)
+
+
+def get_execution_shard_specs(shard: int | str) -> tuple[FModelSpec, ...]:
+    value: int
+    if isinstance(shard, str):
+        normalized = shard.lower()
+        aliases = {
+            "control": 0,
+            "f1a": 1,
+            "f1b": 2,
+            "f2a": 3,
+            "f2b": 4,
+        }
+        if normalized in aliases:
+            value = aliases[normalized]
+        else:
+            for prefix in ("execution_shard_", "shard_"):
+                if normalized.startswith(prefix):
+                    normalized = normalized[len(prefix) :]
+                    break
+            value = int(normalized)
+    else:
+        value = int(shard)
+    try:
+        return EXECUTION_SHARD_SPECS[value]
+    except KeyError as error:
+        raise KeyError(f"unknown F execution shard {shard}") from error

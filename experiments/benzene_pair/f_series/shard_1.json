@@ -1,15 +1,14 @@
 {
   "schema_name": "tfenn_benzene_pair_f_series",
   "schema_version": 1,
-  "experiment_id": 1,
-  "study_directory_name": "f1_t1_two_exchange",
+  "execution_shard_id": 1,
+  "execution_directory_name": "shard_1_f1_a",
   "concurrent_run": true,
-  "shared_gpu_process_count": 4,
+  "tmux_session_count": 5,
   "model_ids": [
-    "F101", "F102", "F103", "F104", "F105", "F106", "F107", "F108", "F109",
-    "F110", "F111", "F112", "F113", "F114", "F115", "F116", "F117",
-    "F201", "F202", "F203", "F204", "F205", "F206", "F207", "F208", "F209",
-    "F210", "F211", "F212", "F213", "F214", "F215", "F216", "F217"
+    "F101", "F102", "F103", "F104", "F105", "F106", "F107", "F108", "F109", "F110",
+    "F111", "F112", "F113", "F114", "F115", "F116", "F117", "F118", "F119", "F120",
+    "F121", "F122", "F123", "F124", "F125"
   ],
   "shard_paths": [
     "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
@@ -43,9 +42,9 @@
   "comet": {
     "enabled": true,
     "required_online": true,
-    "project_name": "tfenn_f_series_t1_two_exchange",
+    "project_name": "tfenn_f_series",
     "workspace": null,
     "upload_checkpoints": true,
-    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "f_series", "t1", "strict_flow"]
+    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "f_series", "f1", "shard_a"]
   }
 }
