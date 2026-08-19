@@ -34,6 +34,13 @@ from .e_series import (
     build_ordinary_raw_mlp,
     compile_invariant_gate_budget,
 )
+from .strict_dual_stream_flow import (
+    StrictDualStreamFlowConfig,
+    StrictFlowCompilationError,
+    StrictFlowStageConfig,
+    build_strict_dual_stream_flow,
+    compile_strict_dual_stream_config,
+)
 
 __all__ = [
     "CandidateAuditV2",
@@ -64,4 +71,9 @@ __all__ = [
     "compact_blueprint_manifest",
     "build_ordinary_raw_mlp",
     "compile_invariant_gate_budget",
+    "StrictDualStreamFlowConfig",
+    "StrictFlowCompilationError",
+    "StrictFlowStageConfig",
+    "build_strict_dual_stream_flow",
+    "compile_strict_dual_stream_config",
 ]

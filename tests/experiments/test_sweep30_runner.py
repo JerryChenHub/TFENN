@@ -205,6 +205,7 @@ def test_group_conv_trial_records_norm_statistics_and_artifacts(
     assert summary["model"]["parameter_count"] == 20_160
     assert summary["concurrent_run"] is True
     assert summary["shared_gpu_process_count"] == 3
+    assert "selected_model_audit" not in summary
     assert set(summary["relative_force_norm_difference"]) == {
         "train",
         "validation",

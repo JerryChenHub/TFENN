@@ -136,6 +136,7 @@ STUDY_SPECS: tuple[StudySpec, ...] = (GROUP_CONV_SPEC, *MODEL_SPECS)
 CometLogger = CometTrialLogger | NullCometTrialLogger
 ModelBuilder = Callable[[Any, str], nn.Module]
 CalibrationHook = Callable[..., Mapping[str, Any] | None]
+SelectedModelAuditHook = Callable[..., Mapping[str, Any]]
 
 
 def get_study_spec(model_id: str) -> StudySpec:
@@ -1151,6 +1152,7 @@ def run_trial(
     sample_limit: int | None = None,
     model_builder: ModelBuilder = _build_model,
     calibration_hook: CalibrationHook | None = None,
+    selected_model_audit_hook: SelectedModelAuditHook | None = None,
     source_sha256: str | None = None,
     study_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1527,6 +1529,24 @@ def run_trial(
             selected_metrics["validation"]["normalized_mse"] / baseline_validation_loss
         ),
     }
+    selected_model_audit: dict[str, Any] | None = None
+    if selected_model_audit_hook is not None:
+        audit = selected_model_audit_hook(
+            model=model,
+            spec=spec,
+            data=data,
+            split=split,
+            config=config,
+            paths=paths,
+            device=device,
+            target_scale=target_scale,
+            selected_metrics=selected_metrics,
+            comet_logger=comet_logger,
+        )
+        if not isinstance(audit, Mapping):
+            raise TypeError("selected model audit hook must return a mapping")
+        selected_model_audit = dict(audit)
+        json.dumps(selected_model_audit, allow_nan=False)
     final_payload = _checkpoint_payload(
         model,
         spec=spec,
@@ -1573,6 +1593,11 @@ def run_trial(
         },
         "relative_force_norm_difference": relative_force_norm_difference,
         "loss_change": loss_change,
+        **(
+            {}
+            if selected_model_audit is None
+            else {"selected_model_audit": selected_model_audit}
+        ),
         "split": {
             "manifest_hash": split_manifest["manifest_hash"],
             "partition_counts": split.counts(),

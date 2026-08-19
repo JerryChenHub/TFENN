@@ -780,6 +780,20 @@ def _path_selection_key(path: _ActivePath) -> tuple[int, str]:
     return family, role
 
 
+def _candidate_family(candidate: _Candidate) -> str:
+    if candidate.shortcut_rank is not None or ".stf." in candidate.role:
+        return "stf"
+    if ".degree3." in candidate.role:
+        return "degree3"
+    if ".symmetric2." in candidate.role:
+        return "symmetric_unary"
+    if ".pair." in candidate.role:
+        return "pair"
+    if ".unary." in candidate.role:
+        return "unary"
+    return "other"
+
+
 def _select_covariant_paths(
     stage: InvariantGateStageV2Config,
     target: TypeKey,
@@ -2168,6 +2182,7 @@ class InvariantGatePipelineV2(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
+        self.strict_flow_manifest: Mapping[str, Any] | None = None
         self.pose_encoder = pose_encoder
         self._anchor_compilation = anchor_compilation
         self._manifest = tuple(manifest)
@@ -2576,6 +2591,135 @@ class InvariantGatePipelineV2(nn.Module):
         return tuple(item.as_dict() for item in self._candidate_audits)
 
     @property
+    def descriptor_role_manifest(self) -> tuple[dict[str, Any], ...]:
+        """Map normalized Gate descriptor columns to stable scalar roles."""
+        radial_count = (
+            2
+            + len(self.config.radial.rbf_centers)
+            + len(self.config.radial.inverse_powers)
+        )
+        result: list[dict[str, Any]] = []
+        for stage in self.config.stages:
+            transform = self.descriptor_transforms[stage.name]
+            assert isinstance(transform, _DescriptorTransform)
+            start = 0
+
+            def append_role(
+                role: str,
+                kind: str,
+                source_names: tuple[str, ...],
+                stop: int,
+                basis_role: str,
+            ) -> None:
+                nonlocal start
+                active_mask = transform.mask[start:stop]
+                result.append(
+                    {
+                        "stage": stage.name,
+                        "role": role,
+                        "kind": kind,
+                        "source_names": source_names,
+                        "start": start,
+                        "stop": stop,
+                        "active": bool(active_mask.bool().all().item()),
+                        "active_column_count": int(
+                            active_mask.bool().sum().item()
+                        ),
+                        "basis_role": basis_role,
+                    }
+                )
+                start = stop
+
+            append_role(
+                f"{stage.name}.scalar.radial",
+                "radial",
+                ("x",),
+                radial_count,
+                "radial",
+            )
+            for path in self._stage_scalars[stage.name]:
+                candidate = path.candidate
+                append_role(
+                    candidate.role,
+                    _candidate_family(candidate),
+                    tuple(
+                        dict.fromkeys(
+                            endpoint.source for endpoint in candidate.endpoints
+                        )
+                    ),
+                    start + path.primitive_channels,
+                    _signature_label(
+                        candidate.signature,
+                        candidate.shortcut_rank,
+                    ),
+                )
+            if start != self._invariant_counts[stage.name]:
+                raise RuntimeError(
+                    f"descriptor role manifest for {stage.name} has "
+                    f"{start} columns, expected {self._invariant_counts[stage.name]}"
+                )
+        return tuple(result)
+
+    @property
+    def coefficient_head_role_manifest(self) -> tuple[dict[str, Any], ...]:
+        """Describe every dense or structured coefficient head by path role."""
+        result: list[dict[str, Any]] = []
+        for stage in self.config.stages:
+            for target, paths in self._stage_paths[stage.name].items():
+                target_channels = self._channels[(stage.name, target)]
+                for path in paths:
+                    candidate = path.candidate
+                    module_name = self._head_names[candidate.role]
+                    result.append(
+                        {
+                            "role": candidate.role,
+                            "stage": stage.name,
+                            "target": _type_label(target),
+                            "source_names": tuple(
+                                dict.fromkeys(
+                                    endpoint.source
+                                    for endpoint in candidate.endpoints
+                                )
+                            ),
+                            "source_types": tuple(
+                                _type_label(endpoint.key)
+                                for endpoint in candidate.endpoints
+                            ),
+                            "path_family": _candidate_family(candidate),
+                            "basis_role": _signature_label(
+                                candidate.signature,
+                                candidate.shortcut_rank,
+                            ),
+                            "primitive_channels": path.primitive_channels,
+                            "target_channels": target_channels,
+                            "coefficient_channels": path.coefficient_channels,
+                            "module_name": f"path_heads.{module_name}",
+                        }
+                    )
+        return tuple(result)
+
+    def coefficient_head_modules_by_role(self) -> Mapping[str, nn.Module]:
+        """Return a stable read only role to coefficient head mapping."""
+        return MappingProxyType(
+            {
+                role: self.path_heads[module_name]
+                for role, module_name in self._head_names.items()
+            }
+        )
+
+    def first_trunk_linear_modules_by_stage(self) -> Mapping[str, nn.Linear]:
+        """Return the first learned Gate trunk layer for each stage."""
+        result: dict[str, nn.Linear] = {}
+        for stage_name, trunk in self.stage_trunks.items():
+            first = next(
+                (module for module in trunk.modules() if isinstance(module, nn.Linear)),
+                None,
+            )
+            if first is not None:
+                result[stage_name] = first
+        return MappingProxyType(result)
+
+    @property
     def selected_covariant_roles(self) -> tuple[str, ...]:
         return tuple(
             path.candidate.role
@@ -2971,7 +3115,12 @@ class InvariantGatePipelineV2(nn.Module):
         return skip
 
     def _run_local(
-        self, displacement: Tensor, relative_frame: Tensor, *, collect_debug: bool
+        self,
+        displacement: Tensor,
+        relative_frame: Tensor,
+        *,
+        collect_debug: bool,
+        collect_coefficients: bool = False,
     ) -> tuple[Tensor, dict[str, Any]]:
         state: TypedStateV2 = {
             "x": {A: displacement.unsqueeze(-2)},
@@ -2989,6 +3138,9 @@ class InvariantGatePipelineV2(nn.Module):
             {} if collect_debug else None
         )
         direct_debug: dict[str, Tensor] | None = {} if collect_debug else None
+        coefficient_debug: dict[str, Tensor] | None = (
+            {} if collect_coefficients else None
+        )
         active_level: int | None = None
         pending: dict[str, dict[TypeKey, Tensor]] = {}
         for stage in self.config.stages:
@@ -3017,6 +3169,12 @@ class InvariantGatePipelineV2(nn.Module):
                     head_value = self.path_heads[self._head_names[path.candidate.role]](
                         trunk
                     )
+                    output_channels = self._channels[(stage.name, target)]
+                    if coefficient_debug is not None:
+                        coefficient_debug[path.candidate.role] = head_value.reshape(
+                            head_value.shape[:-1]
+                            + (output_channels, path.primitive_channels)
+                        )
                     if stage.path_aggregation != "linear":
                         routing_logits.append(head_value.mean(dim=-1))
                     activation_name = (
@@ -3025,7 +3183,6 @@ class InvariantGatePipelineV2(nn.Module):
                         else stage.coefficient_activation
                     )
                     activated = _coefficient_activation(head_value, activation_name)
-                    output_channels = self._channels[(stage.name, target)]
                     coefficients = activated.reshape(
                         activated.shape[:-1]
                         + (output_channels, path.primitive_channels)
@@ -3092,18 +3249,20 @@ class InvariantGatePipelineV2(nn.Module):
             pending[stage.name] = outputs
         state.update(pending)
         local = state[self.config.output_stage][A][..., 0, :]
-        debug = (
-            {}
-            if not collect_debug
-            else {
-                "state": state,
-                "invariants": invariant_debug,
-                "normalized_descriptors": normalized_debug,
-                "branches": branch_debug,
-                "concats": concat_debug,
-                "direct_paths": direct_debug,
-            }
-        )
+        debug: dict[str, Any] = {}
+        if collect_debug:
+            debug.update(
+                {
+                    "state": state,
+                    "invariants": invariant_debug,
+                    "normalized_descriptors": normalized_debug,
+                    "branches": branch_debug,
+                    "concats": concat_debug,
+                    "direct_paths": direct_debug,
+                }
+            )
+        if coefficient_debug is not None:
+            debug["coefficient_activations"] = coefficient_debug
         return local, debug
 
     def forward_local(self, centers: Tensor, frames: Tensor) -> Tensor:
@@ -3128,6 +3287,30 @@ class InvariantGatePipelineV2(nn.Module):
         return {
             name: value.detach()
             for name, value in values["normalized_descriptors"].items()
+        }
+
+    def collect_coefficient_activations(
+        self, centers: Tensor, frames: Tensor
+    ) -> dict[str, Tensor]:
+        """Collect unactivated gamma values without updating normalization."""
+        was_training = self.training
+        try:
+            self.eval()
+            with torch.no_grad():
+                displacement, relative_frame = self._root_geometry(
+                    centers, frames
+                )
+                _local, values = self._run_local(
+                    displacement,
+                    relative_frame,
+                    collect_debug=False,
+                    collect_coefficients=True,
+                )
+        finally:
+            self.train(was_training)
+        return {
+            role: value.detach()
+            for role, value in values["coefficient_activations"].items()
         }
 
     def debug_forward(self, centers: Tensor, frames: Tensor) -> PipelineV2Debug:
