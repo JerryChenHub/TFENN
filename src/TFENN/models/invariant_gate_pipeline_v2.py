@@ -45,6 +45,7 @@ from TFENN.tensor_math import (
 
 __all__ = [
     "CandidateAuditV2",
+    "ChannelProjection",
     "CoefficientActivation",
     "CoefficientHead",
     "Degree3Policy",
@@ -56,6 +57,7 @@ __all__ = [
     "PipelineV2Debug",
     "RadialFeaturesV2Config",
     "MetricGate",
+    "PathAggregation",
     "SkipPolicy",
     "TypedStateV2",
     "build_invariant_gate_pipeline_v2",
@@ -71,9 +73,25 @@ CandidateStatus = Literal[
 SkipPolicy = Literal["legacy", "none", "id", "local_proj", "dense_proj"]
 Degree3Policy = Literal["none", "sym3", "a2b", "ab2", "union", "all"]
 CoefficientActivation = Literal["identity", "sigmoid", "tanh", "silu"]
-CoefficientHead = Literal["dense", "factorized", "orthogonal", "static_mixing"]
+CoefficientHead = Literal[
+    "dense",
+    "factorized",
+    "orthogonal",
+    "static_mixing",
+    "context_lora",
+    "axis_cp",
+]
 DescriptorMask = Literal["full", "raw_only", "unary", "mixed"]
 MetricGate = Literal["none", "norm", "multiply", "skip_identity"]
+ChannelProjection = Literal[
+    "dense",
+    "factorized",
+    "tucker",
+    "tensor_train",
+    "toeplitz",
+    "cayley",
+]
+PathAggregation = Literal["linear", "attention", "soft_moe"]
 TypedStateV2: TypeAlias = dict[str, dict[TypeKey, Tensor]]
 _RAW_SOURCES = frozenset(("x", "r"))
 _RESERVED_STREAMS: dict[str, Stream] = {"x": "A", "r": "B"}
@@ -201,6 +219,17 @@ class InvariantGateStageV2Config:
     trunk_linearized: bool = False
     trunk_residual: bool = False
     metric_gate: MetricGate = "none"
+    execution_level: int | None = None
+    covariant_live_mixed_only: bool = False
+    covariant_path_quota: int | None = None
+    covariant_required_source_names: tuple[str, ...] | None = None
+    parameter_share_group: str | None = None
+    channel_projection: ChannelProjection = "dense"
+    channel_projection_rank: int | None = None
+    path_aggregation: PathAggregation = "linear"
+    path_temperature: float = 1.0
+    type_channel_overrides: tuple[tuple[int, int], ...] = ()
+    reversible_coupling: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.isidentifier():
@@ -281,6 +310,8 @@ class InvariantGateStageV2Config:
             "factorized",
             "orthogonal",
             "static_mixing",
+            "context_lora",
+            "axis_cp",
         ):
             raise ValueError("unsupported coefficient_head")
         if self.coefficient_head in ("dense", "static_mixing"):
@@ -320,6 +351,91 @@ class InvariantGateStageV2Config:
             "none",
         ):
             raise ValueError("skip_identity metric gate requires an explicit skip")
+        if self.execution_level is not None:
+            if (
+                isinstance(self.execution_level, bool)
+                or not isinstance(self.execution_level, int)
+                or self.execution_level < 0
+            ):
+                raise ValueError(
+                    "execution_level must be a nonnegative integer or None"
+                )
+        if not isinstance(self.covariant_live_mixed_only, bool):
+            raise TypeError("covariant_live_mixed_only must be bool")
+        if self.covariant_path_quota is not None:
+            object.__setattr__(
+                self,
+                "covariant_path_quota",
+                _positive_int(self.covariant_path_quota, "covariant_path_quota"),
+            )
+        if self.covariant_required_source_names is not None:
+            required_sources = _names(
+                self.covariant_required_source_names,
+                "covariant_required_source_names",
+                allow_empty=True,
+            )
+            unknown_required = tuple(
+                name for name in required_sources if name not in self.source_names
+            )
+            if unknown_required:
+                raise ValueError(
+                    "covariant required sources must be stage source names: "
+                    f"{unknown_required}"
+                )
+            object.__setattr__(
+                self,
+                "covariant_required_source_names",
+                required_sources,
+            )
+        if self.parameter_share_group is not None and (
+            not isinstance(self.parameter_share_group, str)
+            or not self.parameter_share_group
+        ):
+            raise ValueError("parameter_share_group must be a nonempty string or None")
+        if self.channel_projection not in (
+            "dense",
+            "factorized",
+            "tucker",
+            "tensor_train",
+            "toeplitz",
+            "cayley",
+        ):
+            raise ValueError("unsupported channel_projection")
+        if self.channel_projection in ("dense", "toeplitz", "cayley"):
+            if self.channel_projection_rank is not None:
+                raise ValueError(
+                    "dense, toeplitz, and cayley channel projections do not use a rank"
+                )
+        elif self.channel_projection_rank is None:
+            raise ValueError("structured channel projection requires a rank")
+        else:
+            object.__setattr__(
+                self,
+                "channel_projection_rank",
+                _positive_int(self.channel_projection_rank, "channel_projection_rank"),
+            )
+        if self.path_aggregation not in ("linear", "attention", "soft_moe"):
+            raise ValueError("unsupported path_aggregation")
+        object.__setattr__(
+            self,
+            "path_temperature",
+            _positive_float(self.path_temperature, "path_temperature"),
+        )
+        overrides = tuple(
+            (int(component), int(width))
+            for component, width in self.type_channel_overrides
+        )
+        if any(component < 0 or width < 1 for component, width in overrides):
+            raise ValueError("type channel overrides must be nonnegative and positive")
+        if len({component for component, _width in overrides}) != len(overrides):
+            raise ValueError("type channel override components must be unique")
+        if overrides and self.output_stream != "B":
+            raise ValueError("type channel overrides are only valid for B stages")
+        object.__setattr__(self, "type_channel_overrides", overrides)
+        if not isinstance(self.reversible_coupling, bool):
+            raise TypeError("reversible_coupling must be bool")
+        if self.reversible_coupling and self.channels < 2:
+            raise ValueError("reversible coupling requires at least two channels")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "InvariantGateStageV2Config":
@@ -367,10 +483,25 @@ class InvariantGateStageV2Config:
             trunk_linearized=value.get("trunk_linearized", False),
             trunk_residual=value.get("trunk_residual", False),
             metric_gate=value.get("metric_gate", "none"),
+            execution_level=value.get("execution_level"),
+            covariant_live_mixed_only=value.get("covariant_live_mixed_only", False),
+            covariant_path_quota=value.get("covariant_path_quota"),
+            covariant_required_source_names=None
+            if value.get("covariant_required_source_names") is None
+            else tuple(value["covariant_required_source_names"]),
+            parameter_share_group=value.get("parameter_share_group"),
+            channel_projection=value.get("channel_projection", "dense"),
+            channel_projection_rank=value.get("channel_projection_rank"),
+            path_aggregation=value.get("path_aggregation", "linear"),
+            path_temperature=value.get("path_temperature", 1.0),
+            type_channel_overrides=tuple(
+                tuple(item) for item in value.get("type_channel_overrides", ())
+            ),
+            reversible_coupling=value.get("reversible_coupling", False),
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "name": self.name,
             "output_stream": self.output_stream,
             "source_names": list(self.source_names),
@@ -403,6 +534,47 @@ class InvariantGateStageV2Config:
             "trunk_residual": self.trunk_residual,
             "metric_gate": self.metric_gate,
         }
+        if self.execution_level is not None:
+            result["execution_level"] = self.execution_level
+        if self.covariant_live_mixed_only:
+            result["covariant_live_mixed_only"] = True
+        if self.covariant_path_quota is not None:
+            result["covariant_path_quota"] = self.covariant_path_quota
+        if self.covariant_required_source_names is not None:
+            result["covariant_required_source_names"] = list(
+                self.covariant_required_source_names
+            )
+        if self.parameter_share_group is not None:
+            result["parameter_share_group"] = self.parameter_share_group
+        if self.channel_projection != "dense":
+            result["channel_projection"] = self.channel_projection
+            result["channel_projection_rank"] = self.channel_projection_rank
+        if self.path_aggregation != "linear":
+            result["path_aggregation"] = self.path_aggregation
+        if self.path_temperature != 1.0:
+            result["path_temperature"] = self.path_temperature
+        if self.type_channel_overrides:
+            result["type_channel_overrides"] = [
+                list(item) for item in self.type_channel_overrides
+            ]
+        if self.reversible_coupling:
+            result["reversible_coupling"] = True
+        return result
+
+
+def _resolved_execution_levels(
+    stages: Sequence[InvariantGateStageV2Config],
+) -> tuple[int, ...]:
+    """Resolve default sequential stages and explicit synchronous levels."""
+    result: list[int] = []
+    previous = -1
+    for stage in stages:
+        level = previous + 1 if stage.execution_level is None else stage.execution_level
+        if level < previous:
+            raise ValueError("execution levels must be nondecreasing")
+        result.append(level)
+        previous = level
+    return tuple(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +590,7 @@ class InvariantGatePipelineV2Config:
     max_invariant_channels: int = 20_000
     degree3_overflow_policy: Literal["raise", "audit_skip"] = "raise"
     radial: RadialFeaturesV2Config = field(default_factory=RadialFeaturesV2Config)
+    implemented_mechanism: str | None = None
 
     def __post_init__(self) -> None:
         stages = tuple(self.stages)
@@ -431,30 +604,41 @@ class InvariantGatePipelineV2Config:
             or not self.architecture_id.isidentifier()
         ):
             raise ValueError("architecture_id must be a valid identifier")
+        levels = _resolved_execution_levels(stages)
+        names = tuple(stage.name for stage in stages)
+        if len(set(names)) != len(names) or any(name in _RAW_SOURCES for name in names):
+            raise ValueError("stage source names must be unique and nonreserved")
         known = dict(_RESERVED_STREAMS)
-        for stage in stages:
-            if stage.name in known:
-                raise ValueError(f"duplicate source name {stage.name}")
-            invariant_names = (
-                stage.source_names
-                if stage.invariant_source_names is None
-                else stage.invariant_source_names
-            )
-            skip_names = (
-                stage.source_names
-                if stage.skip_source_names is None
-                else stage.skip_source_names
-            )
-            unknown = tuple(
-                name
-                for name in stage.source_names + invariant_names + skip_names
-                if name not in known
-            )
-            if unknown:
-                raise ValueError(
-                    f"stage {stage.name} references unavailable sources {unknown}"
+        cursor = 0
+        while cursor < len(stages):
+            level = levels[cursor]
+            end = cursor + 1
+            while end < len(stages) and levels[end] == level:
+                end += 1
+            group = stages[cursor:end]
+            for stage in group:
+                invariant_names = (
+                    stage.source_names
+                    if stage.invariant_source_names is None
+                    else stage.invariant_source_names
                 )
-            known[stage.name] = stage.output_stream
+                skip_names = (
+                    stage.source_names
+                    if stage.skip_source_names is None
+                    else stage.skip_source_names
+                )
+                unknown = tuple(
+                    name
+                    for name in stage.source_names + invariant_names + skip_names
+                    if name not in known
+                )
+                if unknown:
+                    raise ValueError(
+                        f"stage {stage.name} references unavailable sources {unknown}; "
+                        "same level stages use a frozen prelevel snapshot"
+                    )
+            known.update((stage.name, stage.output_stream) for stage in group)
+            cursor = end
         if self.output_stage != stages[-1].name:
             raise ValueError("output_stage must name the final stage")
         output = stages[-1]
@@ -474,6 +658,11 @@ class InvariantGatePipelineV2Config:
             raise ValueError("unsupported degree3_overflow_policy")
         if not isinstance(self.radial, RadialFeaturesV2Config):
             raise TypeError("radial must be RadialFeaturesV2Config")
+        if self.implemented_mechanism is not None and (
+            not isinstance(self.implemented_mechanism, str)
+            or not self.implemented_mechanism
+        ):
+            raise ValueError("implemented_mechanism must be a nonempty string or None")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "InvariantGatePipelineV2Config":
@@ -489,10 +678,11 @@ class InvariantGatePipelineV2Config:
             max_invariant_channels=value.get("max_invariant_channels", 20_000),
             degree3_overflow_policy=value.get("degree3_overflow_policy", "raise"),
             radial=RadialFeaturesV2Config.from_dict(value.get("radial", {})),
+            implemented_mechanism=value.get("implemented_mechanism"),
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "stages": [item.as_dict() for item in self.stages],
             "output_stage": self.output_stage,
             "architecture_id": self.architecture_id,
@@ -503,6 +693,9 @@ class InvariantGatePipelineV2Config:
             "degree3_overflow_policy": self.degree3_overflow_policy,
             "radial": self.radial.as_dict(),
         }
+        if self.implemented_mechanism is not None:
+            result["implemented_mechanism"] = self.implemented_mechanism
+        return result
 
 
 def default_invariant_gate_pipeline_v2_config() -> InvariantGatePipelineV2Config:
@@ -571,6 +764,100 @@ class _ActivePath:
     coefficient_channels: int
 
 
+def _path_selection_key(path: _ActivePath) -> tuple[int, str]:
+    role = path.candidate.role
+    family = (
+        0
+        if ".unary." in role
+        else 1
+        if ".pair." in role
+        else 2
+        if ".symmetric2." in role
+        else 3
+        if ".stf." in role
+        else 4
+    )
+    return family, role
+
+
+def _select_covariant_paths(
+    stage: InvariantGateStageV2Config,
+    target: TypeKey,
+    paths: Sequence[_ActivePath],
+    required_sources: Sequence[str] = (),
+    audits: Sequence[CandidateAuditV2] = (),
+) -> list[_ActivePath]:
+    """Apply a stable quota where cross messages replace self messages."""
+    quota = stage.covariant_path_quota
+    ordered = sorted(paths, key=_path_selection_key)
+    uncovered = set(required_sources)
+    coverage: list[_ActivePath] = []
+    while uncovered:
+        candidates = tuple(
+            (
+                len(
+                    uncovered.intersection(
+                        endpoint.source for endpoint in path.candidate.endpoints
+                    )
+                ),
+                path,
+            )
+            for path in ordered
+            if path not in coverage
+        )
+        gain, selected = max(
+            candidates,
+            key=lambda item: item[0],
+            default=(0, None),
+        )
+        if gain == 0 or selected is None:
+            raise PipelineV2CompilationError(
+                f"stage {stage.name} cannot cover required sources "
+                f"{tuple(sorted(uncovered))} for {_type_label(target)}",
+                audits,
+            )
+        coverage.append(selected)
+        uncovered.difference_update(
+            endpoint.source for endpoint in selected.candidate.endpoints
+        )
+    if quota is None or len(paths) <= quota:
+        return ordered
+    if len(coverage) > quota:
+        raise PipelineV2CompilationError(
+            f"stage {stage.name} quota {quota} cannot cover required sources "
+            f"{tuple(required_sources)} for {_type_label(target)}",
+            audits,
+        )
+    remaining = [path for path in ordered if path not in coverage]
+    remaining_quota = quota - len(coverage)
+    if remaining_quota == 0:
+        return sorted(coverage, key=_path_selection_key)
+    cross = [
+        path
+        for path in remaining
+        if any(
+            not endpoint.is_raw and endpoint.key.stream != target.stream
+            for endpoint in path.candidate.endpoints
+        )
+    ]
+    self_paths = [path for path in remaining if path not in cross]
+    if not cross:
+        selected_paths = [*coverage, *self_paths[:remaining_quota]]
+        return sorted(selected_paths, key=_path_selection_key)
+    cross_quota = min(len(cross), max(1, remaining_quota // 2))
+    self_quota = min(len(self_paths), remaining_quota - cross_quota)
+    selected_paths = [
+        *coverage,
+        *self_paths[:self_quota],
+        *cross[: remaining_quota - self_quota],
+    ]
+    if len(selected_paths) < quota:
+        selected_paths.extend(
+            self_paths[self_quota : self_quota + quota - len(selected_paths)]
+        )
+    return sorted(selected_paths, key=_path_selection_key)
+
+
 @dataclass(frozen=True)
 class PipelineV2Debug:
     output_local: Tensor
@@ -604,6 +891,36 @@ def _signature_label(signature: CSignature | None, shortcut_rank: int | None) ->
 
 def _keys(stream: Stream, b_keys: tuple[TypeKey, ...]) -> tuple[TypeKey, ...]:
     return (A,) if stream == "A" else b_keys
+
+
+def _stage_channel_count(stage: InvariantGateStageV2Config, target: TypeKey) -> int:
+    if target.stream == "B":
+        overrides = dict(stage.type_channel_overrides)
+        return overrides.get(target.component, stage.channels)
+    return stage.channels
+
+
+def _resolved_skip_sources(
+    stage: InvariantGateStageV2Config,
+    target: TypeKey,
+    channels: Mapping[tuple[str, TypeKey], int],
+) -> tuple[str, ...]:
+    skip_names = (
+        stage.source_names
+        if stage.skip_source_names is None
+        else stage.skip_source_names
+    )
+    available = tuple(name for name in skip_names if (name, target) in channels)
+    if stage.skip_policy in ("legacy", "dense_proj"):
+        return available
+    if stage.skip_policy == "id":
+        output_channels = _stage_channel_count(stage, target)
+        return tuple(
+            name for name in available if channels[(name, target)] == output_channels
+        )[-1:]
+    if stage.skip_policy == "local_proj":
+        return available[-1:]
+    return ()
 
 
 def _endpoints(
@@ -844,6 +1161,8 @@ def _enumerate_candidates(
                 )
         for target in _keys(stage.output_stream, b_keys):
             for endpoint in direct_endpoints:
+                if stage.covariant_live_mixed_only and endpoint.is_raw:
+                    continue
                 role = f"{stage.name}.{_type_label(target)}.unary.{endpoint.source}.{_type_label(endpoint.key)}"
                 result.append(
                     _Candidate(
@@ -872,7 +1191,10 @@ def _enumerate_candidates(
                     )
             if _bank_flag(stage, "covariant", "raw_mixed_pairs"):
                 for left, right in combinations(direct_endpoints, 2):
-                    if not (left.is_raw or right.is_raw):
+                    if stage.covariant_live_mixed_only:
+                        if left.is_raw and right.is_raw:
+                            continue
+                    elif not (left.is_raw or right.is_raw):
                         continue
                     role = f"{stage.name}.{_type_label(target)}.pair.{left.source}.{_type_label(left.key)}.{right.source}.{_type_label(right.key)}"
                     result.append(
@@ -893,6 +1215,7 @@ def _enumerate_candidates(
                 and _bank_flag(stage, "covariant", "stf_shortcuts")
                 and "x" in stage.source_names
                 and "r" in stage.source_names
+                and not stage.covariant_live_mixed_only
             ):
                 for item in manifest:
                     result.append(
@@ -1247,7 +1570,10 @@ def _head_parameter_upper_bound(
         channels[(endpoint.source, endpoint.key)] for endpoint in candidate.endpoints
     )
     coefficient_count = (
-        stage.channels * input_channels * output_dimension * effective_input
+        _stage_channel_count(stage, candidate.target)
+        * input_channels
+        * output_dimension
+        * effective_input
     )
     return (stage.trunk_width + 1) * coefficient_count
 
@@ -1264,6 +1590,186 @@ class _ChannelProjection(nn.Module):
 
     def forward(self, value: Tensor) -> Tensor:
         return torch.einsum("oi,...id->...od", self.weight, value)
+
+
+class _FactorizedChannelProjection(nn.Module):
+    def __init__(
+        self,
+        input_channels: int,
+        output_channels: int,
+        rank: int,
+        *,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, input_channels, output_channels)
+        self.left = nn.Parameter(torch.empty(output_channels, self.rank, dtype=dtype))
+        self.right = nn.Parameter(torch.empty(self.rank, input_channels, dtype=dtype))
+        nn.init.normal_(self.left, std=1.0 / math.sqrt(max(1, self.rank)))
+        nn.init.normal_(self.right, std=1.0 / math.sqrt(input_channels))
+
+    def forward(self, value: Tensor) -> Tensor:
+        hidden = torch.einsum("ri,...id->...rd", self.right, value)
+        return torch.einsum("or,...rd->...od", self.left, hidden)
+
+
+class _TuckerChannelProjection(nn.Module):
+    def __init__(
+        self,
+        input_channels: int,
+        output_channels: int,
+        rank: int,
+        *,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, input_channels, output_channels)
+        self.left = nn.Parameter(torch.empty(output_channels, self.rank, dtype=dtype))
+        self.core = nn.Parameter(torch.eye(self.rank, dtype=dtype))
+        self.right = nn.Parameter(torch.empty(self.rank, input_channels, dtype=dtype))
+        nn.init.normal_(self.left, std=1.0 / math.sqrt(max(1, self.rank)))
+        nn.init.normal_(self.right, std=1.0 / math.sqrt(input_channels))
+
+    def forward(self, value: Tensor) -> Tensor:
+        hidden = torch.einsum("ri,...id->...rd", self.right, value)
+        hidden = torch.einsum("qr,...rd->...qd", self.core, hidden)
+        return torch.einsum("oq,...qd->...od", self.left, hidden)
+
+
+class _TensorTrainChannelProjection(nn.Module):
+    def __init__(
+        self,
+        input_channels: int,
+        output_channels: int,
+        rank: int,
+        *,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, input_channels, output_channels)
+        self.left = nn.Parameter(torch.empty(output_channels, self.rank, dtype=dtype))
+        self.scale = nn.Parameter(torch.ones(self.rank, dtype=dtype))
+        self.right = nn.Parameter(torch.empty(self.rank, input_channels, dtype=dtype))
+        nn.init.normal_(self.left, std=1.0 / math.sqrt(max(1, self.rank)))
+        nn.init.normal_(self.right, std=1.0 / math.sqrt(input_channels))
+
+    def forward(self, value: Tensor) -> Tensor:
+        hidden = torch.einsum("ri,...id->...rd", self.right, value)
+        hidden = hidden * self.scale.reshape((-1,) + (1,))
+        return torch.einsum("or,...rd->...od", self.left, hidden)
+
+
+class _ToeplitzChannelProjection(nn.Module):
+    def __init__(
+        self, input_channels: int, output_channels: int, *, dtype: torch.dtype
+    ) -> None:
+        super().__init__()
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.diagonals = nn.Parameter(
+            torch.empty(input_channels + output_channels - 1, dtype=dtype)
+        )
+        nn.init.normal_(self.diagonals, std=1.0 / math.sqrt(input_channels))
+        row = torch.arange(output_channels).unsqueeze(1)
+        column = torch.arange(input_channels).unsqueeze(0)
+        self.register_buffer(
+            "indices", column - row + output_channels - 1, persistent=False
+        )
+
+    def forward(self, value: Tensor) -> Tensor:
+        weight = self.diagonals[self.indices]
+        return torch.einsum("oi,...id->...od", weight, value)
+
+
+class _CayleyChannelProjection(nn.Module):
+    def __init__(
+        self, input_channels: int, output_channels: int, *, dtype: torch.dtype
+    ) -> None:
+        super().__init__()
+        self.output_channels = output_channels
+        self.base = nn.Parameter(
+            torch.empty(output_channels, input_channels, dtype=dtype)
+        )
+        nn.init.normal_(self.base, std=1.0 / math.sqrt(input_channels))
+        indices = torch.triu_indices(output_channels, output_channels, offset=1)
+        self.register_buffer("upper_indices", indices, persistent=False)
+        self.skew_values = nn.Parameter(torch.zeros(indices.shape[1], dtype=dtype))
+
+    def forward(self, value: Tensor) -> Tensor:
+        projected = torch.einsum("oi,...id->...od", self.base, value)
+        skew = self.base.new_zeros((self.output_channels, self.output_channels))
+        row, column = self.upper_indices.unbind(dim=0)
+        skew[row, column] = self.skew_values
+        skew[column, row] = -self.skew_values
+        identity = torch.eye(
+            self.output_channels, dtype=self.base.dtype, device=self.base.device
+        )
+        rotation = torch.linalg.solve(identity + skew, identity - skew)
+        return torch.einsum("oi,...id->...od", rotation, projected)
+
+
+def _build_channel_projection(
+    stage: InvariantGateStageV2Config,
+    input_channels: int,
+    output_channels: int,
+    *,
+    dtype: torch.dtype,
+) -> nn.Module:
+    kind = stage.channel_projection
+    rank = stage.channel_projection_rank
+    if kind == "dense":
+        return _ChannelProjection(input_channels, output_channels, dtype=dtype)
+    if kind == "toeplitz":
+        return _ToeplitzChannelProjection(input_channels, output_channels, dtype=dtype)
+    if kind == "cayley":
+        return _CayleyChannelProjection(input_channels, output_channels, dtype=dtype)
+    assert rank is not None
+    if kind == "factorized":
+        return _FactorizedChannelProjection(
+            input_channels, output_channels, rank, dtype=dtype
+        )
+    if kind == "tucker":
+        return _TuckerChannelProjection(
+            input_channels, output_channels, rank, dtype=dtype
+        )
+    if kind == "tensor_train":
+        return _TensorTrainChannelProjection(
+            input_channels, output_channels, rank, dtype=dtype
+        )
+    raise RuntimeError(f"unsupported channel projection {kind}")
+
+
+class _ReversibleChannelCoupling(nn.Module):
+    """Apply two block triangular updates on a multiplicity axis."""
+
+    def __init__(
+        self, channels: int, context_width: int, *, dtype: torch.dtype
+    ) -> None:
+        super().__init__()
+        self.left_channels = channels // 2
+        self.right_channels = channels - self.left_channels
+        self.left_head = nn.Linear(
+            context_width,
+            self.left_channels * self.right_channels,
+            dtype=dtype,
+        )
+        self.right_head = nn.Linear(
+            context_width,
+            self.right_channels * self.left_channels,
+            dtype=dtype,
+        )
+
+    def forward(self, value: Tensor, context: Tensor) -> Tensor:
+        left, right = value.split((self.left_channels, self.right_channels), dim=-2)
+        left_matrix = self.left_head(context).reshape(
+            context.shape[:-1] + (self.left_channels, self.right_channels)
+        )
+        left = left + torch.einsum("...ij,...jd->...id", left_matrix, right)
+        right_matrix = self.right_head(context).reshape(
+            context.shape[:-1] + (self.right_channels, self.left_channels)
+        )
+        right = right + torch.einsum("...ij,...jd->...id", right_matrix, left)
+        return torch.cat((left, right), dim=-2)
 
 
 class _FactorizedCoefficientHead(nn.Module):
@@ -1353,6 +1859,74 @@ class _StaticCoefficientHead(nn.Module):
 
     def forward(self, value: Tensor) -> Tensor:
         return self.weight.expand(value.shape[:-1] + self.weight.shape)
+
+
+class _ContextLoRACoefficientHead(nn.Module):
+    def __init__(
+        self,
+        input_features: int,
+        output_features: int,
+        rank: int,
+        *,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, input_features, output_features)
+        self.base = nn.Linear(input_features, output_features, dtype=dtype)
+        self.output_factor = nn.Parameter(
+            torch.empty(output_features, self.rank, dtype=dtype)
+        )
+        self.context_factor = nn.Parameter(
+            torch.empty(self.rank, input_features, dtype=dtype)
+        )
+        self.value_factor = nn.Parameter(
+            torch.empty(self.rank, input_features, dtype=dtype)
+        )
+        nn.init.normal_(self.output_factor, std=1.0 / math.sqrt(max(1, self.rank)))
+        nn.init.normal_(self.context_factor, std=1.0 / math.sqrt(input_features))
+        nn.init.normal_(self.value_factor, std=1.0 / math.sqrt(input_features))
+
+    def forward(self, value: Tensor) -> Tensor:
+        context = torch.einsum("ri,...i->...r", self.context_factor, value)
+        routed = torch.einsum("ri,...i->...r", self.value_factor, value)
+        update = torch.einsum(
+            "or,...r->...o", self.output_factor, torch.tanh(context) * routed
+        )
+        return self.base(value) + update
+
+
+class _AxisCPCoefficientHead(nn.Module):
+    def __init__(
+        self,
+        input_features: int,
+        output_features: int,
+        rank: int,
+        *,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, input_features, output_features)
+        self.output_factor = nn.Parameter(
+            torch.empty(output_features, self.rank, dtype=dtype)
+        )
+        self.context_factor = nn.Parameter(
+            torch.empty(self.rank, input_features, dtype=dtype)
+        )
+        self.path_factor = nn.Parameter(
+            torch.empty(self.rank, input_features, dtype=dtype)
+        )
+        self.bias = nn.Parameter(torch.zeros(output_features, dtype=dtype))
+        nn.init.normal_(self.output_factor, std=1.0 / math.sqrt(max(1, self.rank)))
+        nn.init.normal_(self.context_factor, std=1.0 / math.sqrt(input_features))
+        nn.init.normal_(self.path_factor, std=1.0 / math.sqrt(input_features))
+
+    def forward(self, value: Tensor) -> Tensor:
+        context = torch.einsum("ri,...i->...r", self.context_factor, value)
+        path = torch.einsum("ri,...i->...r", self.path_factor, value)
+        return (
+            torch.einsum("or,...r->...o", self.output_factor, context * path)
+            + self.bias
+        )
 
 
 class _ResidualTrunk(nn.Module):
@@ -1482,7 +2056,21 @@ def _build_coefficient_head(
             stage.coefficient_rank,
             dtype=dtype,
         )
-    return _OrthogonalCoefficientHead(
+    if stage.coefficient_head == "orthogonal":
+        return _OrthogonalCoefficientHead(
+            stage.trunk_width,
+            output_features,
+            stage.coefficient_rank,
+            dtype=dtype,
+        )
+    if stage.coefficient_head == "context_lora":
+        return _ContextLoRACoefficientHead(
+            stage.trunk_width,
+            output_features,
+            stage.coefficient_rank,
+            dtype=dtype,
+        )
+    return _AxisCPCoefficientHead(
         stage.trunk_width,
         output_features,
         stage.coefficient_rank,
@@ -1636,7 +2224,7 @@ class InvariantGatePipelineV2(nn.Module):
             channels[("r", item.key)] = len(item.anchor_columns)
         for stage in config.stages:
             for key in _keys(stage.output_stream, self._b_keys):
-                channels[(stage.name, key)] = stage.channels
+                channels[(stage.name, key)] = _stage_channel_count(stage, key)
             streams[stage.name] = stage.output_stream
         stage_scalars: dict[str, list[_ActivePath]] = {
             stage.name: [] for stage in config.stages
@@ -1651,13 +2239,18 @@ class InvariantGatePipelineV2(nn.Module):
             audit = audit_by_role[candidate.role]
             if audit.status != "compiled":
                 continue
+            target_channels = (
+                0
+                if candidate.target is None
+                else _stage_channel_count(
+                    stage_lookup[candidate.stage], candidate.target
+                )
+            )
             if candidate.shortcut_rank is not None:
                 endpoint = candidate.endpoints[1]
                 primitive_channels = channels[(endpoint.source, endpoint.key)]
                 artifact_name = None
-                coefficient_channels = (
-                    stage_lookup[candidate.stage].channels * primitive_channels
-                )
+                coefficient_channels = target_channels * primitive_channels
             else:
                 assert candidate.signature is not None
                 primitive_channels = artifacts[
@@ -1666,9 +2259,7 @@ class InvariantGatePipelineV2(nn.Module):
                     channels[(item.source, item.key)] for item in candidate.endpoints
                 )
                 artifact_name = artifact_names[candidate.signature]
-                coefficient_channels = (
-                    stage_lookup[candidate.stage].channels * primitive_channels
-                )
+                coefficient_channels = target_channels * primitive_channels
             active = _ActivePath(
                 candidate, artifact_name, primitive_channels, coefficient_channels
             )
@@ -1678,32 +2269,89 @@ class InvariantGatePipelineV2(nn.Module):
                 assert candidate.target is not None
                 stage_paths[candidate.stage][candidate.target].append(active)
 
+        for stage in config.stages:
+            for target, paths in stage_paths[stage.name].items():
+                represented_by_skip = set(
+                    _resolved_skip_sources(stage, target, channels)
+                )
+                required_sources = tuple(
+                    source
+                    for source in (
+                        ()
+                        if stage.covariant_required_source_names is None
+                        else stage.covariant_required_source_names
+                    )
+                    if source not in represented_by_skip
+                )
+                stage_paths[stage.name][target] = _select_covariant_paths(
+                    stage,
+                    target,
+                    paths,
+                    required_sources,
+                    audits,
+                )
+
         self.stage_trunks = nn.ModuleDict()
         self.path_heads = nn.ModuleDict()
         self.channel_projections = nn.ModuleDict()
         self.skip_projections = nn.ModuleDict()
         self.skip_gates = nn.ModuleDict()
+        self.reversible_couplings = nn.ModuleDict()
         self.descriptor_transforms = nn.ModuleDict()
         self.normalization = nn.ModuleDict()
         self._head_names: dict[str, str] = {}
         self._projection_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_projection_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_gate_names: dict[tuple[str, TypeKey], str] = {}
+        self._reversible_names: dict[tuple[str, TypeKey], str] = {}
         self._skip_sources: dict[tuple[str, TypeKey], tuple[str, ...]] = {}
-        invariant_counts: dict[str, int] = {}
-        for stage in config.stages:
-            radial_count = (
-                2 + len(config.radial.rbf_centers) + len(config.radial.inverse_powers)
-            )
-            invariant_count = radial_count + sum(
-                path.primitive_channels for path in stage_scalars[stage.name]
-            )
+        shared_modules: dict[tuple[Any, ...], nn.Module] = {}
+
+        def resolve_shared(
+            stage: InvariantGateStageV2Config,
+            key: tuple[Any, ...],
+            factory: Any,
+        ) -> nn.Module:
+            group = stage.parameter_share_group
+            if group is None:
+                return factory()
+            shared_key = (group, *key)
+            module = shared_modules.get(shared_key)
+            if module is None:
+                module = factory()
+                shared_modules[shared_key] = module
+            return module
+
+        radial_count = (
+            2 + len(config.radial.rbf_centers) + len(config.radial.inverse_powers)
+        )
+        invariant_counts = {
+            stage.name: radial_count
+            + sum(path.primitive_channels for path in stage_scalars[stage.name])
+            for stage in config.stages
+        }
+        for stage_name, invariant_count in invariant_counts.items():
             if invariant_count > config.max_invariant_channels:
                 raise PipelineV2CompilationError(
-                    f"stage {stage.name} invariant count {invariant_count} exceeds limit {config.max_invariant_channels}",
+                    f"stage {stage_name} invariant count {invariant_count} exceeds limit {config.max_invariant_channels}",
                     audits,
                 )
-            invariant_counts[stage.name] = invariant_count
+        shared_context_widths: dict[str, int] = {}
+        for stage in config.stages:
+            if stage.parameter_share_group is not None:
+                shared_context_widths[stage.parameter_share_group] = max(
+                    shared_context_widths.get(stage.parameter_share_group, 0),
+                    invariant_counts[stage.name],
+                )
+        self._trunk_input_counts = {
+            stage.name: invariant_counts[stage.name]
+            if stage.parameter_share_group is None
+            else shared_context_widths[stage.parameter_share_group]
+            for stage in config.stages
+        }
+        for stage in config.stages:
+            invariant_count = invariant_counts[stage.name]
+            trunk_input_count = self._trunk_input_counts[stage.name]
             self.normalization[stage.name] = nn.ModuleList(
                 _RunningRMS(config.radial.rms_epsilon, dtype=torch.float64)
                 for _index in range(1 + len(stage_scalars[stage.name]))
@@ -1717,24 +2365,55 @@ class InvariantGatePipelineV2(nn.Module):
                 ),
                 dtype=torch.float64,
             )
-            self.stage_trunks[stage.name] = _build_trunk(
+            self.stage_trunks[stage.name] = resolve_shared(
                 stage,
-                invariant_count,
-                dtype=torch.float64,
+                (
+                    "trunk",
+                    trunk_input_count,
+                    stage.trunk_width,
+                    stage.activation,
+                    stage.trunk_depth,
+                    stage.trunk_linearized,
+                    stage.trunk_residual,
+                    stage.metric_gate,
+                    stage.coefficient_head,
+                ),
+                lambda: _build_trunk(
+                    stage,
+                    trunk_input_count,
+                    dtype=torch.float64,
+                ),
             )
             for target, paths in stage_paths[stage.name].items():
+                output_channels = _stage_channel_count(stage, target)
+                if stage.reversible_coupling and output_channels < 2:
+                    raise ValueError(
+                        f"stage {stage.name} reversible target {_type_label(target)} has fewer than two channels"
+                    )
                 if not paths:
                     raise PipelineV2CompilationError(
                         f"stage {stage.name} has no path for {_type_label(target)}",
                         audits,
                     )
-                for path in paths:
+                for path_index, path in enumerate(paths):
                     head_name = f"head_{len(self._head_names):04d}"
                     self._head_names[path.candidate.role] = head_name
-                    self.path_heads[head_name] = _build_coefficient_head(
+                    self.path_heads[head_name] = resolve_shared(
                         stage,
-                        path.coefficient_channels,
-                        dtype=torch.float64,
+                        (
+                            "head",
+                            _type_label(target),
+                            path_index,
+                            path.coefficient_channels,
+                            stage.trunk_width,
+                            stage.coefficient_head,
+                            stage.coefficient_rank,
+                        ),
+                        lambda path=path: _build_coefficient_head(
+                            stage,
+                            path.coefficient_channels,
+                            dtype=torch.float64,
+                        ),
                     )
                 skip_names = (
                     stage.source_names
@@ -1744,7 +2423,7 @@ class InvariantGatePipelineV2(nn.Module):
                 available_skip = tuple(
                     name for name in skip_names if (name, target) in channels
                 )
-                path_channels = stage.channels * len(paths)
+                path_channels = output_channels * len(paths)
                 if stage.skip_policy == "legacy":
                     skip_channels = sum(
                         channels[(name, target)] for name in available_skip
@@ -1758,7 +2437,7 @@ class InvariantGatePipelineV2(nn.Module):
                         selected_skip = tuple(
                             name
                             for name in available_skip
-                            if channels[(name, target)] == stage.channels
+                            if channels[(name, target)] == output_channels
                         )[-1:]
                         if not selected_skip:
                             raise ValueError(
@@ -1787,27 +2466,68 @@ class InvariantGatePipelineV2(nn.Module):
                         self._skip_projection_names[(stage.name, target)] = (
                             skip_projection_name
                         )
-                        self.skip_projections[skip_projection_name] = (
-                            _ChannelProjection(
+                        self.skip_projections[skip_projection_name] = resolve_shared(
+                            stage,
+                            (
+                                "skip_projection",
+                                _type_label(target),
                                 skip_input_channels,
-                                stage.channels,
+                                output_channels,
+                                stage.channel_projection,
+                                stage.channel_projection_rank,
+                            ),
+                            lambda: _build_channel_projection(
+                                stage,
+                                skip_input_channels,
+                                output_channels,
                                 dtype=torch.float64,
-                            )
+                            ),
                         )
                     if stage.metric_gate == "skip_identity":
                         gate_name = f"skip_gate_{len(self._skip_gate_names):04d}"
                         self._skip_gate_names[(stage.name, target)] = gate_name
                         self.skip_gates[gate_name] = nn.Linear(
                             stage.trunk_width,
-                            stage.channels,
+                            output_channels,
                             dtype=torch.float64,
                         )
                 projection_name = f"projection_{len(self._projection_names):04d}"
                 self._projection_names[(stage.name, target)] = projection_name
-                self.channel_projections[projection_name] = _ChannelProjection(
-                    concat_channels, stage.channels, dtype=torch.float64
+                self.channel_projections[projection_name] = resolve_shared(
+                    stage,
+                    (
+                        "projection",
+                        _type_label(target),
+                        concat_channels,
+                        output_channels,
+                        stage.channel_projection,
+                        stage.channel_projection_rank,
+                    ),
+                    lambda: _build_channel_projection(
+                        stage,
+                        concat_channels,
+                        output_channels,
+                        dtype=torch.float64,
+                    ),
                 )
-                channels[(stage.name, target)] = stage.channels
+                if stage.reversible_coupling:
+                    reversible_name = f"reversible_{len(self._reversible_names):04d}"
+                    self._reversible_names[(stage.name, target)] = reversible_name
+                    self.reversible_couplings[reversible_name] = resolve_shared(
+                        stage,
+                        (
+                            "reversible",
+                            _type_label(target),
+                            output_channels,
+                            stage.trunk_width,
+                        ),
+                        lambda: _ReversibleChannelCoupling(
+                            output_channels,
+                            stage.trunk_width,
+                            dtype=torch.float64,
+                        ),
+                    )
+                channels[(stage.name, target)] = output_channels
         self._streams = streams
         self._channels = channels
         self._stage_scalars = {
@@ -1818,6 +2538,21 @@ class InvariantGatePipelineV2(nn.Module):
             for name, targets in stage_paths.items()
         }
         self._invariant_counts = invariant_counts
+        all_parameterized_modules = (
+            *self.stage_trunks.values(),
+            *self.path_heads.values(),
+            *self.channel_projections.values(),
+            *self.skip_projections.values(),
+            *self.reversible_couplings.values(),
+        )
+        self._shared_module_reference_count = len(all_parameterized_modules) - len(
+            {id(module) for module in all_parameterized_modules}
+        )
+        resolved_levels = _resolved_execution_levels(config.stages)
+        self._execution_levels = {
+            stage.name: level for stage, level in zip(config.stages, resolved_levels)
+        }
+        self._execution_group_count = len(set(resolved_levels))
         output_config = config.stages[-1]
         self._readout_sources = tuple(output_config.source_names)
         self._state_metadata = {
@@ -1841,6 +2576,15 @@ class InvariantGatePipelineV2(nn.Module):
         return tuple(item.as_dict() for item in self._candidate_audits)
 
     @property
+    def selected_covariant_roles(self) -> tuple[str, ...]:
+        return tuple(
+            path.candidate.role
+            for targets in self._stage_paths.values()
+            for paths in targets.values()
+            for path in paths
+        )
+
+    @property
     def readout_source_manifest(self) -> tuple[str, ...]:
         return self._readout_sources
 
@@ -1855,6 +2599,30 @@ class InvariantGatePipelineV2(nn.Module):
             for parameter in self.parameters()
             if parameter.requires_grad
         )
+
+    @property
+    def architecture_metadata(self) -> dict[str, Any]:
+        return {
+            "model_family": "invariant_gate_pipeline_v2",
+            "architecture_id": self.config.architecture_id,
+            "implemented_mechanism": self.config.implemented_mechanism,
+            "trainable_parameter_count": self.trainable_parameter_count,
+            "execution_group_count": self._execution_group_count,
+            "shared_module_reference_count": self._shared_module_reference_count,
+            "channel_projection_kinds": tuple(
+                dict.fromkeys(stage.channel_projection for stage in self.config.stages)
+            ),
+            "coefficient_head_kinds": tuple(
+                dict.fromkeys(stage.coefficient_head for stage in self.config.stages)
+            ),
+            "path_aggregation_kinds": tuple(
+                dict.fromkeys(stage.path_aggregation for stage in self.config.stages)
+            ),
+            "reversible_coupling_stage_count": sum(
+                stage.reversible_coupling for stage in self.config.stages
+            ),
+            "selected_covariant_path_count": len(self.selected_covariant_roles),
+        }
 
     @property
     def offline_compilation_summary(self) -> dict[str, Any]:
@@ -1879,6 +2647,14 @@ class InvariantGatePipelineV2(nn.Module):
             "trainable_parameter_count": self.trainable_parameter_count,
             "forward_compilation": False,
             "runtime_group_expansion": False,
+            "selected_covariant_path_count": len(self.selected_covariant_roles),
+            "execution_group_count": self._execution_group_count,
+            "shared_module_reference_count": self._shared_module_reference_count,
+            "synchronous_stage_count": sum(
+                sum(item == level for item in self._execution_levels.values())
+                for level in set(self._execution_levels.values())
+                if sum(item == level for item in self._execution_levels.values()) > 1
+            ),
             "normalization_path_count": sum(
                 len(items) for items in self.normalization.values()
             ),
@@ -2047,7 +2823,8 @@ class InvariantGatePipelineV2(nn.Module):
             projection = self.channel_projections[
                 self._projection_names[(self.config.output_stage, A)]
             ]
-            projection.weight.zero_()
+            for parameter in projection.parameters():
+                parameter.zero_()
             count += 1
         return count
 
@@ -2153,7 +2930,13 @@ class InvariantGatePipelineV2(nn.Module):
             primitive = self._primitive(path, state).squeeze(-1)
             schemas.append(self._normalize_schema(primitive, stage.name, index))
         normalized = torch.cat(schemas, dim=-1)
-        return normalized, self.descriptor_transforms[stage.name](normalized)
+        invariants = self.descriptor_transforms[stage.name](normalized)
+        target_width = self._trunk_input_counts[stage.name]
+        if invariants.shape[-1] < target_width:
+            invariants = torch.nn.functional.pad(
+                invariants, (0, target_width - invariants.shape[-1])
+            )
+        return normalized, invariants
 
     def _metric_gate_factor(self, primitive: Tensor, target: TypeKey) -> Tensor:
         metric = getattr(self, self._metric_names[target])
@@ -2206,7 +2989,16 @@ class InvariantGatePipelineV2(nn.Module):
             {} if collect_debug else None
         )
         direct_debug: dict[str, Tensor] | None = {} if collect_debug else None
+        active_level: int | None = None
+        pending: dict[str, dict[TypeKey, Tensor]] = {}
         for stage in self.config.stages:
+            level = self._execution_levels[stage.name]
+            if active_level is None:
+                active_level = level
+            elif level != active_level:
+                state.update(pending)
+                pending = {}
+                active_level = level
             normalized, invariants = self._stage_invariants(stage, radial, state)
             trunk = self.stage_trunks[stage.name](invariants)
             if invariant_debug is not None:
@@ -2219,19 +3011,24 @@ class InvariantGatePipelineV2(nn.Module):
                 concat_debug[stage.name] = {}
             for target, paths in self._stage_paths[stage.name].items():
                 branches: list[Tensor] = []
+                routing_logits: list[Tensor] = []
                 for path in paths:
                     primitive = self._primitive(path, state)
                     head_value = self.path_heads[self._head_names[path.candidate.role]](
                         trunk
                     )
+                    if stage.path_aggregation != "linear":
+                        routing_logits.append(head_value.mean(dim=-1))
                     activation_name = (
                         "tanh"
                         if stage.metric_gate == "skip_identity"
                         else stage.coefficient_activation
                     )
                     activated = _coefficient_activation(head_value, activation_name)
+                    output_channels = self._channels[(stage.name, target)]
                     coefficients = activated.reshape(
-                        activated.shape[:-1] + (stage.channels, path.primitive_channels)
+                        activated.shape[:-1]
+                        + (output_channels, path.primitive_channels)
                     )
                     if stage.metric_gate in ("norm", "multiply"):
                         coefficients = coefficients * self._metric_gate_factor(
@@ -2243,7 +3040,24 @@ class InvariantGatePipelineV2(nn.Module):
                         primitive,
                     )
                     branches.append(branch)
-                    if direct_debug is not None:
+                if stage.path_aggregation != "linear":
+                    scores = (
+                        torch.stack(routing_logits, dim=-1) / stage.path_temperature
+                    )
+                    weights = torch.softmax(scores, dim=-1)
+                    if stage.path_aggregation == "soft_moe" and len(paths) > 2:
+                        selected = torch.topk(weights, k=2, dim=-1).indices
+                        mask = torch.zeros_like(weights).scatter(-1, selected, 1.0)
+                        weights = weights * mask
+                        weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(
+                            torch.finfo(weights.dtype).eps
+                        )
+                    branches = [
+                        branch * weights[..., index, None, None]
+                        for index, branch in enumerate(branches)
+                    ]
+                if direct_debug is not None:
+                    for path, branch in zip(paths, branches):
                         direct_debug[path.candidate.role] = branch
                 if stage.skip_policy == "legacy":
                     skip = tuple(
@@ -2266,11 +3080,17 @@ class InvariantGatePipelineV2(nn.Module):
                             direct_debug[f"{stage.name}.{_type_label(target)}.skip"] = (
                                 skip_value
                             )
+                reversible_name = self._reversible_names.get((stage.name, target))
+                if reversible_name is not None:
+                    coupling = self.reversible_couplings[reversible_name]
+                    assert isinstance(coupling, _ReversibleChannelCoupling)
+                    output = coupling(output, trunk)
                 outputs[target] = output
                 if branch_debug is not None and concat_debug is not None:
                     branch_debug[stage.name][target] = tuple(branches)
                     concat_debug[stage.name][target] = concat
-            state[stage.name] = outputs
+            pending[stage.name] = outputs
+        state.update(pending)
         local = state[self.config.output_stage][A][..., 0, :]
         debug = (
             {}
@@ -2387,7 +3207,7 @@ def build_invariant_gate_pipeline_v2(
     b_keys = tuple(item.key for item in manifest)
     for stage in resolved.stages:
         for key in _keys(stage.output_stream, b_keys):
-            channel_schedule[(stage.name, key)] = stage.channels
+            channel_schedule[(stage.name, key)] = _stage_channel_count(stage, key)
     artifacts: dict[CSignature, CovariantCompilation | _ReynoldsCovariantArtifact] = {}
     audits: list[CandidateAuditV2] = []
     failures = False
@@ -2413,10 +3233,15 @@ def build_invariant_gate_pipeline_v2(
         signature_label = _signature_label(candidate.signature, candidate.shortcut_rank)
         if candidate.shortcut_rank is not None:
             stage = stage_lookup[candidate.stage]
+            assert candidate.target is not None or candidate.bank == "scalar"
             primitive_channels = channel_schedule[
                 (candidate.endpoints[1].source, candidate.endpoints[1].key)
             ]
-            coefficient_count = stage.channels * primitive_channels
+            coefficient_count = (
+                0
+                if candidate.target is None
+                else _stage_channel_count(stage, candidate.target) * primitive_channels
+            )
             estimated = (
                 (stage.trunk_width + 1) * coefficient_count
                 if candidate.bank == "covariant"
@@ -2457,7 +3282,7 @@ def build_invariant_gate_pipeline_v2(
                 for endpoint in candidate.endpoints
             )
             predicted_coefficient_count = (
-                stage_lookup[candidate.stage].channels
+                _stage_channel_count(stage_lookup[candidate.stage], candidate.target)
                 * predicted_input_channels
                 * predicted_basis_dimension
             )
@@ -2502,7 +3327,11 @@ def build_invariant_gate_pipeline_v2(
                 for endpoint in candidate.endpoints
             )
             coefficient_count = (
-                stage.channels * input_channels * artifact.basis_dimension
+                0
+                if candidate.target is None
+                else _stage_channel_count(stage, candidate.target)
+                * input_channels
+                * artifact.basis_dimension
             )
             estimated = (
                 0

@@ -1,0 +1,50 @@
+{
+  "schema_name": "tfenn_benzene_pair_e_series",
+  "schema_version": 1,
+  "experiment_id": 4,
+  "study_directory_name": "e4_compact_8k",
+  "concurrent_run": true,
+  "shared_gpu_process_count": 5,
+  "model_ids": [
+    "E401", "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409", "E410",
+    "E411", "E412", "E413", "E414", "E415", "E416", "E417", "E418", "E419", "E420",
+    "E421", "E422", "E423", "E424", "E425"
+  ],
+  "shard_paths": [
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
+    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
+  ],
+  "epochs": 500,
+  "effective_batch_size": 10000,
+  "micro_batch_size": 10000,
+  "learning_rate": 0.003,
+  "weight_decay": 0.0001,
+  "scheduler_step_size": 125,
+  "scheduler_gamma": 0.5,
+  "validation_every": 1,
+  "split_seed": 20260821,
+  "model_seed": 20260822,
+  "shuffle_seed": 20260823,
+  "split_fractions": [0.8, 0.1, 0.1],
+  "device": "auto",
+  "dtype": "float32",
+  "threads": 4,
+  "symmetry_tolerance": 0.0001,
+  "symmetry_probe_count": 8,
+  "expected_sample_count": 400000,
+  "expected_dataset_revision": 3,
+  "expected_opls_version": "2.0.0",
+  "enable_tf32": true,
+  "relative_force_norm_sample_count": 10000,
+  "relative_force_norm_seed": 20260824,
+  "comet": {
+    "enabled": true,
+    "required_online": true,
+    "project_name": "tfenn_e_series_e4_compact_8k",
+    "workspace": null,
+    "upload_checkpoints": true,
+    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "e_series", "e4"]
+  }
+}

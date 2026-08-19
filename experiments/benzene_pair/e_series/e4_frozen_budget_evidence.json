@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "budget_version": "e4_budget_v2_20260817",
+  "record_kind": "fresh_source_coverage_compiled_audit_summary",
+  "audit_date": "2026-08-17",
+  "raw_stdout_persisted": false,
+  "focused_recompiled_models": [
+    "E401", "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409", "E410",
+    "E411", "E412", "E413", "E414", "E415", "E416", "E417", "E418", "E419", "E420",
+    "E421", "E422", "E423", "E424", "E425"
+  ],
+  "verification": {
+    "method": "sequential_actual_model_build",
+    "actual_parameter_count_definition": "sum of trainable parameter numel",
+    "estimator_matched_actual_for_all_models": true,
+    "budget_minimum": 7800,
+    "budget_maximum": 8200
+  },
+  "models": {
+    "E401": {"base_width": 11, "readout_width": 15, "actual_parameter_count": 7998},
+    "E402": {"base_width": 7, "readout_width": 5, "actual_parameter_count": 7994},
+    "E403": {"base_width": 6, "readout_width": 4, "actual_parameter_count": 8008},
+    "E404": {"base_width": 1, "readout_width": 23, "actual_parameter_count": 8001},
+    "E405": {"base_width": 10, "readout_width": 5, "actual_parameter_count": 7978},
+    "E406": {"base_width": 1, "readout_width": 8, "actual_parameter_count": 8004},
+    "E407": {"base_width": 21, "readout_width": 16, "actual_parameter_count": 7997},
+    "E408": {"base_width": 3, "readout_width": 10, "actual_parameter_count": 8037},
+    "E409": {"base_width": 8, "readout_width": 2, "actual_parameter_count": 8067},
+    "E410": {"base_width": 1, "readout_width": 35, "actual_parameter_count": 7995},
+    "E411": {"base_width": 6, "readout_width": 3, "actual_parameter_count": 8001},
+    "E412": {"base_width": 2, "readout_width": 30, "actual_parameter_count": 8006},
+    "E413": {"base_width": 9, "readout_width": 6, "actual_parameter_count": 7987},
+    "E414": {"base_width": 1, "readout_width": 20, "actual_parameter_count": 8021},
+    "E415": {"base_width": 6, "readout_width": 26, "actual_parameter_count": 7995},
+    "E416": {"base_width": 8, "readout_width": 3, "actual_parameter_count": 7994},
+    "E417": {"base_width": 6, "readout_width": 16, "actual_parameter_count": 8006},
+    "E418": {"base_width": 1, "readout_width": 22, "actual_parameter_count": 7957},
+    "E419": {"base_width": 10, "readout_width": 2, "actual_parameter_count": 7990},
+    "E420": {"base_width": 12, "readout_width": 14, "actual_parameter_count": 7993},
+    "E421": {"base_width": 5, "readout_width": 3, "actual_parameter_count": 8000},
+    "E422": {"base_width": 5, "readout_width": 15, "actual_parameter_count": 7996},
+    "E423": {"base_width": 3, "readout_width": 4, "actual_parameter_count": 8043},
+    "E424": {"base_width": 3, "readout_width": 21, "actual_parameter_count": 7996},
+    "E425": {"base_width": 2, "readout_width": 7, "actual_parameter_count": 8014}
+  }
+}

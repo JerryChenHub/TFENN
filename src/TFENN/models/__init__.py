@@ -2,6 +2,7 @@
 
 from .invariant_gate_pipeline_v2 import (
     CandidateAuditV2,
+    ChannelProjection,
     CoefficientActivation,
     CoefficientHead,
     Degree3Policy,
@@ -13,6 +14,7 @@ from .invariant_gate_pipeline_v2 import (
     PipelineV2Debug,
     RadialFeaturesV2Config,
     MetricGate,
+    PathAggregation,
     SkipPolicy,
     TypedStateV2,
     build_invariant_gate_pipeline_v2,
@@ -23,9 +25,19 @@ from .model_level_group_conv_mlp import (
     ModelLevelGroupConvMLPConfig,
     build_model_level_group_conv_mlp,
 )
+from .e_series import (
+    InvariantGateBudgetError,
+    OrdinaryRawMLP,
+    OrdinaryRawMLPConfig,
+    build_budget_compiled_invariant_gate,
+    compact_blueprint_manifest,
+    build_ordinary_raw_mlp,
+    compile_invariant_gate_budget,
+)
 
 __all__ = [
     "CandidateAuditV2",
+    "ChannelProjection",
     "CoefficientActivation",
     "CoefficientHead",
     "Degree3Policy",
@@ -37,6 +49,7 @@ __all__ = [
     "PipelineV2Debug",
     "RadialFeaturesV2Config",
     "MetricGate",
+    "PathAggregation",
     "SkipPolicy",
     "TypedStateV2",
     "build_invariant_gate_pipeline_v2",
@@ -44,4 +57,11 @@ __all__ = [
     "ModelLevelGroupConvMLP",
     "ModelLevelGroupConvMLPConfig",
     "build_model_level_group_conv_mlp",
+    "InvariantGateBudgetError",
+    "OrdinaryRawMLP",
+    "OrdinaryRawMLPConfig",
+    "build_budget_compiled_invariant_gate",
+    "compact_blueprint_manifest",
+    "build_ordinary_raw_mlp",
+    "compile_invariant_gate_budget",
 ]

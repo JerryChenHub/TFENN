@@ -19,5 +19,14 @@ Compare a 20k parameter model level GroupConv MLP with 30 Invariant Gate V2 desi
 
 ## Protocol and time
 
-The study contained 31 models, each trained for 500 epochs with batch size 10,000, AdamW, initial learning rate 0.003, weight decay 0.0001, StepLR every 125 epochs with gamma 0.5, float32, and TF32. Model selection used minimum Validation normalized MSE. The Comet project was `tfenn_pair_benzene_model_comparison_400k`. The locally retained result document was finalized on 2026 08 14 at 22:47 PDT; exact cloud start and finish timestamps were not retained in that document.
+The study contained 31 models, each trained for 500 epochs with batch size 10,000, AdamW, initial learning rate 0.003, weight decay 0.0001, StepLR every 125 epochs with gamma 0.5, float32, and TF32. Model selection used minimum Validation normalized MSE. The Comet project was `tfenn_pair_benzene_model_comparison_400k`.
 
+The cloud run covered 2026 08 13 23:18:44 UTC through 2026 08 15 03:31:30 UTC. The runtime was Python 3.11.14, PyTorch 2.7.0 with CUDA 12.8.
+
+## History archive
+
+`HISTORY.tar.gz` is a fresh download of the complete cloud result directory `sweep31_400k_v2`. It contains 31 complete per model histories, summaries, configurations, status files, Comet identities, stdout and stderr logs, best checkpoints, final checkpoints, plus the study manifest, split files, comparison, and results table.
+
+Archive size: 8,817,146 bytes
+Archive entries: 317
+SHA256: `191c00978b40ba61153f0651a7bf9cbf73a0265c5f5b23b0de9c573ce2562080`

@@ -19,5 +19,14 @@ Experiment 1 tested source visibility, raw bypass, and typed residual policies. 
 
 ## Protocol and time
 
-The study contained 75 models in three concurrent groups of 25. Every model used 500 epochs, batch size 10,000, AdamW, initial learning rate 0.003, weight decay 0.0001, StepLR every 125 epochs with gamma 0.5, float32, and TF32. Model selection used minimum Validation normalized MSE. The three Comet projects were `tfenn_d_series_experiment_1_dense_bypass`, `tfenn_d_series_experiment_2_architecture_paths`, and `tfenn_d_series_experiment_3_invariant_gate`. The first retained model completed at 2026 08 15 02:34:02 PDT, the final model completed at 2026 08 16 09:29:55 PDT, and the verified export was created at 2026 08 17 16:56:35 UTC.
+The study contained 75 models in three concurrent groups of 25. Every model used 500 epochs, batch size 10,000, AdamW, initial learning rate 0.003, weight decay 0.0001, StepLR every 125 epochs with gamma 0.5, float32, and TF32. Model selection used minimum Validation normalized MSE. The three Comet projects were `tfenn_d_series_experiment_1_dense_bypass`, `tfenn_d_series_experiment_2_architecture_paths`, and `tfenn_d_series_experiment_3_invariant_gate`.
 
+The cloud run covered 2026 08 15 08:25:16 UTC through 2026 08 16 16:29:55 UTC. The runtime was Python 3.11.14, PyTorch 2.7.0 with CUDA 12.8.
+
+## History archive
+
+`HISTORY.tar.gz` is a fresh download of the complete cloud result directory `d_series_400k_v1`. It contains 75 complete per model histories, summaries, configurations, status files, Comet identities, stdout and stderr logs, best checkpoints, final checkpoints, the shared split, and all three study manifests, comparisons, and results tables.
+
+Archive size: 17,197,745 bytes
+Archive entries: 769
+SHA256: `0be840131a0b3d2c32ae5077f9401144a827ce90bd71e8e9655d3b086fc09ef8`
