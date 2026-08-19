@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -177,6 +178,7 @@ def test_strict_config_round_trip_and_exact_lowering() -> None:
     assert all(
         stage.covariant_include_raw_mixed_pairs is False
         and stage.invariant_include_raw_mixed_pairs is True
+        and stage.covariant_include_stf_shortcuts is True
         and stage.degree3_policy == "none"
         for stage in lowered.stages
     )
@@ -201,6 +203,22 @@ def test_strict_config_rejects_raw_rereads_and_same_level_dependencies() -> None
                 stage("out", "A", ("a1",), 1, ("x", "r", "a1"), 1),
             )
         )
+    with pytest.raises(ValueError, match="declared hidden parents"):
+        StrictDualStreamFlowConfig(
+            (
+                stage("a1", "A", ("x",), 1, ("x", "r"), 0),
+                stage("b1", "B", ("r",), 2, ("x", "r"), 0),
+                stage(
+                    "a2",
+                    "A",
+                    ("a1",),
+                    1,
+                    ("x", "r", "a1", "b1"),
+                    1,
+                ),
+                stage("out", "A", ("a2",), 1, ("x", "r", "a2"), 2),
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -217,6 +235,10 @@ def test_planned_baseline_parameter_counts_and_strict_edge_manifest(
         generator_names=("sixfold", "twofold"),
     )
     assert model.trainable_parameter_count == expected_count
+    contract = model.strict_flow_manifest["mathematical_contract"]
+    assert contract["group_convolution"] is False
+    assert contract["joint_hidden_tensor_products"] is False
+    assert contract["b_channel_semantics"] == "channels per registered B TypeKey"
     edge_audit = model.strict_flow_manifest["edge_audit"]
     assert edge_audit
     assert all(not item["missing_edges"] for item in edge_audit)
@@ -225,6 +247,18 @@ def test_planned_baseline_parameter_counts_and_strict_edge_manifest(
     assert all(
         all(edge["covered"] for edge in item["same_type_edges"])
         and all(edge["covered"] for edge in item["cross_type_edges"])
+        for item in edge_audit
+    )
+    expected_bypass = {
+        "a1": ("x",),
+        "b1": ("r",),
+        "a2": ("a1",),
+        "b2": ("b1",),
+        "a3": ("a2",),
+        "out": ("a3",),
+    }
+    assert all(
+        tuple(item["skip_source_names"]) == expected_bypass[item["stage"]]
         for item in edge_audit
     )
 
@@ -287,6 +321,44 @@ def test_full_and_raw_only_share_schema_parameters_and_initialization() -> None:
         all(source not in {"x", "r"} for source in item["source_names"])
         for item in scalar_pairs
     )
+    active_by_stage = {
+        stage.name: sum(
+            int(item["active_column_count"])
+            for item in raw_only.descriptor_role_manifest
+            if item["stage"] == stage.name
+        )
+        for stage in raw_only.config.stages
+    }
+    assert set(active_by_stage.values()) == {42}
+
+
+def test_raw_only_mask_zeroes_hidden_gate_columns_and_their_gradients() -> None:
+    model = build_strict_dual_stream_flow(
+        proper_d6_generators(),
+        strict_config("T1", descriptor_mask="raw_only"),
+    )
+    centers, frames = pairs(2)
+    model.eval()
+    debug = model.debug_forward(centers, frames)
+    first_layers = model.first_trunk_linear_modules_by_stage()
+    inactive_by_stage: dict[str, list[tuple[int, int]]] = {}
+    for item in model.descriptor_role_manifest:
+        if not item["active"]:
+            inactive_by_stage.setdefault(item["stage"], []).append(
+                (int(item["start"]), int(item["stop"]))
+            )
+    assert inactive_by_stage
+    for stage, intervals in inactive_by_stage.items():
+        for start, stop in intervals:
+            assert torch.count_nonzero(debug.invariants[stage][..., start:stop]) == 0
+    model.train()
+    model.zero_grad(set_to_none=True)
+    model(centers, frames).square().mean().backward()
+    for stage, intervals in inactive_by_stage.items():
+        gradient = first_layers[stage].weight.grad
+        assert gradient is not None
+        for start, stop in intervals:
+            assert torch.count_nonzero(gradient[:, start:stop]) == 0
 
 
 def test_postcompile_audit_rejects_a_missing_cross_type_edge(
@@ -334,6 +406,27 @@ def test_gate_audit_hooks_preserve_mode_and_report_reshaped_gamma() -> None:
     assert model.first_trunk_linear_modules_by_stage().keys() == {
         stage.name for stage in model.config.stages
     }
+
+
+def test_internal_channels_are_typed_multiplicities_per_b_type() -> None:
+    base = strict_config("T1")
+    stages = tuple(
+        replace(stage, channels=4)
+        if stage.name in {"a2", "b1"}
+        else stage
+        for stage in base.stages
+    )
+    model = build_strict_dual_stream_flow(
+        proper_d6_generators(),
+        replace(base, stages=stages, architecture_id="strict_t1_wide_channels"),
+    )
+    centers, frames = pairs(2)
+    debug = model.debug_forward(centers, frames)
+    assert debug.state["a2"][A].shape[-2:] == (4, 3)
+    b1_blocks = tuple(debug.state["b1"].values())
+    assert len(b1_blocks) == 2
+    assert {value.shape[-2] for value in b1_blocks} == {4}
+    assert {value.shape[-1] for value in b1_blocks} == {5, 13}
 
 
 def test_strict_model_has_finite_gradients_and_exact_covariance() -> None:

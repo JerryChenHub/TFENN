@@ -221,6 +221,19 @@ class StrictDualStreamFlowConfig:
             previous_level = level
             cursor = end
 
+        for stage in stages:
+            hidden_parents = tuple(
+                source
+                for source in stage.source_names
+                if source not in _RAW_SOURCES
+            )
+            expected_invariants = ("x", "r", *hidden_parents)
+            if stage.invariant_source_names != expected_invariants:
+                raise ValueError(
+                    f"stage {stage.name} invariant sources must be raw x,r plus "
+                    f"its declared hidden parents {hidden_parents}"
+                )
+
         x_ingress = tuple(stage for stage in stages if "x" in stage.source_names)
         r_ingress = tuple(stage for stage in stages if "r" in stage.source_names)
         if len(x_ingress) != 1 or (
@@ -299,7 +312,9 @@ def compile_strict_dual_stream_config(
             skip_policy="legacy",
             covariant_include_symmetric_unary=True,
             covariant_include_raw_mixed_pairs=False,
-            covariant_include_stf_shortcuts=False,
+            # Match E311 literally.  The strict graph never presents x and r
+            # together as covariant sources, so this family remains dormant.
+            covariant_include_stf_shortcuts=True,
             invariant_include_symmetric_unary=True,
             invariant_include_raw_mixed_pairs=True,
             invariant_include_stf_shortcuts=True,
@@ -461,6 +476,16 @@ def build_strict_dual_stream_flow(
     model.strict_flow_manifest = MappingProxyType(
         {
             "schema_version": 1,
+            "mathematical_contract": {
+                "raw_covariant_ingress": {"x": "a1:A", "R_via_pose_r": "b1:B"},
+                "covariant_visibility": "declared parent edges only",
+                "invariant_visibility": "raw x,r plus declared hidden parents",
+                "same_type_flow": "legacy bypass plus gated unary and symmetric2 paths",
+                "cross_type_flow": "compiled unary and symmetric2 intertwiners",
+                "joint_hidden_tensor_products": False,
+                "b_channel_semantics": "channels per registered B TypeKey",
+                "group_convolution": False,
+            },
             "config": resolved.as_dict(),
             "edge_audit": edge_manifest,
             "candidate_manifest": model.candidate_manifest,

@@ -16,39 +16,45 @@ from experiments.benzene_pair.f_series.gate_audit import export_selected_gate_au
 from experiments.benzene_pair.f_series.model_factory import build_f_series_model
 
 
-def test_four_subexperiments_have_fixed_protocol_and_independent_projects(
+def test_five_execution_shards_have_one_shared_protocol(
     tmp_path: Path,
 ) -> None:
     configs = tuple(
-        runner.make_config(index, study_root=tmp_path) for index in range(4)
+        runner.make_config(index, study_root=tmp_path) for index in range(5)
     )
-    assert len({config.study_directory for config in configs}) == 4
-    assert len({config.comet.project_name for config in configs}) == 4
+    assert len({config.study_directory for config in configs}) == 1
+    assert len({config.comet.project_name for config in configs}) == 1
     assert {config.epochs for config in configs} == {500}
     assert {config.effective_batch_size for config in configs} == {10_000}
     assert {config.micro_batch_size for config in configs} == {10_000}
     assert {config.expected_sample_count for config in configs} == {400_000}
     assert len({config.shard_paths for config in configs}) == 1
     assert all(config.comet.required_online for config in configs)
-    assert tuple(runner.EXPERIMENTS[index].comet_project for index in range(4)) == (
-        "tfenn_f_series_f0_e311_control",
-        "tfenn_f_series_t1_two_exchange",
-        "tfenn_f_series_t2_early_injection",
-        "tfenn_f_series_t3_late_fusion",
-    )
+    assert [
+        len(runner.get_execution_shard_specs(index)) for index in range(5)
+    ] == [1, 25, 25, 25, 25]
+    assert [
+        runner.EXECUTION_SHARDS[index].tmux_session_name for index in range(5)
+    ] == [
+        "tfenn_f_control",
+        "tfenn_f1_a",
+        "tfenn_f1_b",
+        "tfenn_f2_a",
+        "tfenn_f2_b",
+    ]
 
 
-def test_config_files_match_group_mapping_and_concurrency() -> None:
-    for experiment_id, path in runner.DEFAULT_CONFIG_PATHS.items():
+def test_config_files_match_execution_shards_and_concurrency() -> None:
+    for shard_id, path in runner.DEFAULT_CONFIG_PATHS.items():
         value = json.loads(path.read_text(encoding="utf_8"))
-        specs = runner._select_specs(experiment_id, ())
+        specs = runner._select_specs(shard_id, ())
         assert tuple(value["model_ids"]) == tuple(spec.model_id for spec in specs)
         assert value["concurrent_run"] is True
-        assert value["shared_gpu_process_count"] == 4
-        assert len(specs) == runner.EXPECTED_EXPERIMENT_COUNTS[experiment_id]
+        assert value["tmux_session_count"] == 5
+        assert len(specs) == runner.EXPECTED_SHARD_COUNTS[shard_id]
 
 
-def test_parser_exposes_reference_prepare_preflight_run_trial_and_smoke(
+def test_parser_exposes_prepare_run_trial_smoke_aggregate_and_tmux(
     tmp_path: Path,
 ) -> None:
     parser = runner.build_parser()
@@ -64,12 +70,10 @@ def test_parser_exposes_reference_prepare_preflight_run_trial_and_smoke(
     assert prepare.reference_split_directory == tmp_path / "reference"
     assert prepare.force_preflight is True
     assert parser.parse_args(("preflight", "--force")).force is True
-    assert parser.parse_args(("run", "--experiment", "3")).handler is runner.run_study
+    assert parser.parse_args(("run", "--shard", "f2b")).handler is runner.run_study
     trial = parser.parse_args(
         (
             "trial",
-            "--experiment",
-            "1",
             "--model",
             "F201",
             "--sample_limit",
@@ -79,10 +83,39 @@ def test_parser_exposes_reference_prepare_preflight_run_trial_and_smoke(
     )
     assert trial.handler is runner.run_trial_command
     smoke = parser.parse_args(
-        ("smoke", "--experiment", "2", "--model", "F218", "--epochs", "1")
+        ("smoke", "--shard", "f2a", "--model", "F218", "--epochs", "1")
     )
     assert smoke.handler is runner.run_smoke
     assert smoke.model == ["F218"]
+    assert parser.parse_args(("aggregate",)).handler is runner.run_aggregate
+    assert parser.parse_args(("launch-tmux", "--dry-run")).handler is (
+        runner.run_launch_tmux
+    )
+
+
+def test_tmux_launcher_has_exactly_five_disjoint_batches(tmp_path: Path) -> None:
+    commands = runner.tmux_launch_commands(study_root=tmp_path, devices=("cuda",))
+    assert len(commands) == 5
+    assert len({session for session, _command in commands}) == 5
+    for shard_id, (session, command) in enumerate(commands):
+        shard = runner.EXECUTION_SHARDS[shard_id]
+        assert session == shard.tmux_session_name
+        pane = command[-1]
+        assert f"--shard {shard.key}" in pane
+        assert "--device cuda" in pane
+        assert "COMET_API_KEY is unavailable inside tmux" in pane
+
+
+def test_tmux_launcher_auto_maps_five_visible_devices_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner.torch.cuda, "device_count", lambda: 5)
+    assert runner._tmux_devices(()) == tuple(
+        f"cuda:{index}" for index in range(5)
+    )
+    monkeypatch.setattr(runner.torch.cuda, "device_count", lambda: 4)
+    with pytest.raises(ValueError, match="five visible CUDA devices"):
+        runner._tmux_devices(())
 
 
 def test_source_hash_covers_package_initializers_and_all_f_runtime_modules(
@@ -136,12 +169,12 @@ def test_smoke_spawns_sampled_trials_without_comet(
     arguments = runner.build_parser().parse_args(
         (
             "smoke",
-            "--experiment",
-            "1",
+            "--shard",
+            "f1a",
             "--model",
             "F101",
             "--model",
-            "F201",
+            "F125",
             "--epochs",
             "1",
             "--sample_limit",
@@ -156,7 +189,7 @@ def test_smoke_spawns_sampled_trials_without_comet(
     )
     assert runner.run_smoke(arguments) == 0
     assert len(calls) == 2
-    assert {call[call.index("--model") + 1] for call in calls} == {"F101", "F201"}
+    assert {call[call.index("--model") + 1] for call in calls} == {"F101", "F125"}
     assert all("--disable_comet" in call for call in calls)
     assert all(call[call.index("--sample_limit") + 1] == "64" for call in calls)
 
@@ -228,7 +261,9 @@ def test_pair_preflight_has_same_initialization_schema_and_declared_paths(
         assert record["pair_descriptor_schema_equal"] is True
         assert record["pair_candidate_manifest_equal"] is True
         assert record["pair_coefficient_manifest_equal"] is True
-        assert record["covariant_unit_check"]["all_trainable_parameters_connected"]
+        assert record["covariant_unit_check"][
+            "all_trainable_parameter_tensors_have_gradients"
+        ]
 
 
 def test_f100_preflight_reproduces_e311_exactly() -> None:
@@ -293,6 +328,21 @@ def test_gate_audit_marks_only_raw_only_descriptor_columns_ineligible(
         assert payload["validation_probe_seed"] == 20260822
         assert payload["validation_probe_batch_size"] == 2_000
         assert payload["validation_gamma_statistics"]
+        assert all(
+            row["pre_projection_branch_rms"] >= 0.0
+            for row in payload["validation_gamma_statistics"]
+        )
+        assert all(
+            "primitive_index" in row and "basis_index" not in row
+            for row in payload["coefficient_parameter_statistics"]
+        )
+        parameter_path = Path(report["invariant_gate_parameter_path"])
+        assert parameter_path.is_file()
+        snapshot = torch.load(parameter_path)
+        assert snapshot["model_id"] == model_id
+        assert snapshot["stage_trunks"]
+        assert snapshot["coefficient_heads_by_role"]
+        assert snapshot["typed_channel_projections"]
         assert all(
             row["ranking_eligible"] == row["active"]
             for row in payload["trunk_input_column_statistics"]
