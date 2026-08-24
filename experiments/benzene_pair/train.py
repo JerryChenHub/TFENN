@@ -23,7 +23,10 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from TFENN.data import load_benzene_cluster_csv, load_benzene_cluster_metadata
+from experiments.benzene_pair.data import (
+    load_benzene_cluster_csv,
+    load_benzene_cluster_metadata,
+)
 from TFENN.models import (
     InvariantGatePipelineV2,
     InvariantGatePipelineV2Config,
@@ -34,7 +37,7 @@ from TFENN.models import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_PATH = (
-    REPOSITORY_ROOT / "data" / "benzene_pair" / "benzene_pair_opls_2_0_0_v3.csv"
+    Path(__file__).resolve().parent / "data" / "benzene_pair_opls_2_0_0_v3.csv"
 )
 DEFAULT_OUTPUT_DIRECTORY = Path(__file__).resolve().parent / "runs" / "default_v2"
 TARGET_DEFINITION = "force on molecule_id 0 in the root coordinate frame"
@@ -345,6 +348,7 @@ def regression_metrics(
     mse = float(physical_error.square().mean())
     rmse = math.sqrt(mse)
     mae = float(physical_error.abs().mean())
+    sae = float(physical_error.abs().sum())
     target_rms = float(torch.sqrt(physical_target.square().mean()))
     if target_rms <= 0.0:
         raise ValueError("relative RMSE requires a nonzero target")
@@ -370,6 +374,7 @@ def regression_metrics(
         "mse": mse,
         "rmse": rmse,
         "mae": mae,
+        "sae": sae,
         "relative_rmse": relative_rmse,
         "r2": r2,
     }

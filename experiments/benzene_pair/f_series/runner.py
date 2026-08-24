@@ -1,4 +1,4 @@
-"""Run two paired F studies through five independent execution shards."""
+"""Run two paired F projects through four independent execution shards."""
 
 from __future__ import annotations
 
@@ -42,8 +42,9 @@ E311_SPLIT_MANIFEST_HASH = (
 )
 F_STUDY_METADATA = {
     "concurrent_run": True,
-    "tmux_session_count": 5,
-    "execution_shard_counts": [1, 25, 25, 25, 25],
+    "tmux_session_count": 4,
+    "execution_shard_counts": [26, 25, 25, 25],
+    "comet_project_count": 2,
     "plan_document_name": "EXPERIMENT_PLAN.md",
     "planned_model_count": 101,
     "executed_model_count": 101,
@@ -65,6 +66,7 @@ def _json_value(value: Any) -> Any:
 class ExecutionShardDefinition:
     shard_id: int
     key: str
+    project_id: int
     tmux_session_name: str
     directory_name: str
     comet_project: str
@@ -74,42 +76,38 @@ class ExecutionShardDefinition:
 EXECUTION_SHARDS = {
     0: ExecutionShardDefinition(
         0,
-        "control",
-        "tfenn_f_control",
-        "shard_0_control",
-        "tfenn_f_series",
-        "exact E311 historical control",
+        "f1a",
+        1,
+        "tfenn_f1_a",
+        "shard_0_f1_a",
+        "tfenn_f_series_f1_full_local",
+        "F100 control and F1 models F101 through F125",
     ),
     1: ExecutionShardDefinition(
         1,
-        "f1a",
-        "tfenn_f1_a",
-        "shard_1_f1_a",
-        "tfenn_f_series",
-        "F1 models F101 through F125",
+        "f1b",
+        1,
+        "tfenn_f1_b",
+        "shard_1_f1_b",
+        "tfenn_f_series_f1_full_local",
+        "F1 models F126 through F150",
     ),
     2: ExecutionShardDefinition(
         2,
-        "f1b",
-        "tfenn_f1_b",
-        "shard_2_f1_b",
-        "tfenn_f_series",
-        "F1 models F126 through F150",
+        "f2a",
+        2,
+        "tfenn_f2_a",
+        "shard_2_f2_a",
+        "tfenn_f_series_f2_raw_only",
+        "F2 models F201 through F225",
     ),
     3: ExecutionShardDefinition(
         3,
-        "f2a",
-        "tfenn_f2_a",
-        "shard_3_f2_a",
-        "tfenn_f_series",
-        "F2 models F201 through F225",
-    ),
-    4: ExecutionShardDefinition(
-        4,
         "f2b",
+        2,
         "tfenn_f2_b",
-        "shard_4_f2_b",
-        "tfenn_f_series",
+        "shard_3_f2_b",
+        "tfenn_f_series_f2_raw_only",
         "F2 models F226 through F250",
     ),
 }
@@ -117,12 +115,13 @@ DEFAULT_CONFIG_PATHS = {
     shard_id: Path(__file__).resolve().parent / f"shard_{shard_id}.json"
     for shard_id in EXECUTION_SHARDS
 }
-EXPECTED_SHARD_COUNTS = {0: 1, 1: 25, 2: 25, 3: 25, 4: 25}
+EXPECTED_SHARD_COUNTS = {0: 26, 1: 25, 2: 25, 3: 25}
 
 
 RESULT_FIELDS = (
     "model_id",
     "experiment_id",
+    "project_id",
     "execution_shard_id",
     "topology",
     "invariant_policy",
@@ -172,7 +171,7 @@ def _shard(value: int | str) -> ExecutionShardDefinition:
     try:
         return EXECUTION_SHARDS[int(value)]
     except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("execution shard must be control, f1a, f1b, f2a, or f2b") from error
+        raise ValueError("execution shard must be f1a, f1b, f2a, or f2b") from error
 
 
 def _shared_split_directory(study_root: str | Path) -> Path:
@@ -184,6 +183,14 @@ def _execution_directory(
     shard: ExecutionShardDefinition,
 ) -> Path:
     return Path(study_root).resolve() / "execution_shards" / shard.directory_name
+
+
+def _project_directory(study_root: str | Path, project_id: int) -> Path:
+    return Path(study_root).resolve() / "projects" / f"f{project_id}"
+
+
+def _model_directory(study_root: str | Path, spec: FModelSpec) -> Path:
+    return _project_directory(study_root, spec.project_id) / "models" / spec.model_id
 
 
 def make_config(
@@ -207,6 +214,11 @@ def make_config(
     )
     if tuple(value.get("model_ids", ())) != expected_models:
         raise ValueError("F config model ids do not match the catalog")
+    if any(
+        item.project_id != shard.project_id
+        for item in get_execution_shard_specs(shard.shard_id)
+    ):
+        raise ValueError("F execution shard crosses scientific projects")
     for name in ("concurrent_run", "tmux_session_count"):
         if value.get(name) != F_STUDY_METADATA[name]:
             raise ValueError(f"F config {name} does not match")
@@ -284,7 +296,19 @@ def _source_sha256() -> str:
                 *Path(__file__).resolve().parent.rglob("*.py"),
                 *(REPOSITORY_ROOT / "src" / "TFENN" / "models").rglob("*.py"),
                 *(REPOSITORY_ROOT / "src" / "TFENN" / "tensor_math").rglob("*.py"),
-                *(REPOSITORY_ROOT / "src" / "TFENN" / "data").rglob("*.py"),
+                *(
+                    REPOSITORY_ROOT / "experiments" / "benzene_pair" / "data"
+                ).rglob("*.py"),
+                *(
+                    REPOSITORY_ROOT
+                    / "experiments"
+                    / "benzene_pair"
+                    / "e_series"
+                ).rglob("*.py"),
+                REPOSITORY_ROOT
+                / "experiments"
+                / "benzene_pair"
+                / "group_conv_baseline.py",
             ),
             key=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix(),
         )
@@ -679,13 +703,23 @@ def _enriched_spec(spec: FModelSpec, preflight: Mapping[str, Any]) -> FModelSpec
     return replace(spec, options=options)
 
 
-def _study_metadata(preflight: Mapping[str, Any] | None) -> dict[str, Any]:
-    return {
+def _study_metadata(
+    preflight: Mapping[str, Any] | None,
+    *,
+    project_id: int | None = None,
+    execution_shard_id: int | None = None,
+) -> dict[str, Any]:
+    result = {
         **F_STUDY_METADATA,
         "preflight_hash": None if preflight is None else preflight["preflight_hash"],
         "reference_split_manifest_hash": E311_SPLIT_MANIFEST_HASH,
         "reference_split_indices_sha256": E311_SPLIT_INDICES_SHA256,
     }
+    if project_id is not None:
+        result["scientific_project_id"] = project_id
+    if execution_shard_id is not None:
+        result["execution_shard_id"] = execution_shard_id
+    return result
 
 
 def _require_e311_split(manifest: Mapping[str, Any]) -> None:
@@ -796,7 +830,7 @@ def _select_specs(
 
 
 def _result_row(config: common.SweepConfig, spec: FModelSpec) -> dict[str, Any]:
-    paths = common.TrialPaths.create(config.study_directory / "models" / spec.model_id)
+    paths = common.TrialPaths.create(_model_directory(config.study_directory, spec))
     summary = common._load_json(paths.summary) if paths.summary.is_file() else {}
     status = common._load_json(paths.status) if paths.status.is_file() else {}
     error = common._load_json(paths.error) if paths.error.is_file() else {}
@@ -813,6 +847,7 @@ def _result_row(config: common.SweepConfig, spec: FModelSpec) -> dict[str, Any]:
     return {
         "model_id": spec.model_id,
         "experiment_id": spec.experiment_id,
+        "project_id": spec.project_id,
         "execution_shard_id": spec.execution_shard_id,
         "topology": spec.options.get("topology", ""),
         "invariant_policy": spec.options.get("invariant_policy", ""),
@@ -942,7 +977,11 @@ def run_study(arguments: argparse.Namespace) -> int:
     if not os.environ.get("COMET_API_KEY", "").strip():
         raise RuntimeError("COMET_API_KEY must be set for a formal F series run")
     preflight = _require_preflight(arguments.study_root)
-    study_metadata = _study_metadata(preflight)
+    study_metadata = _study_metadata(
+        preflight,
+        project_id=shard.project_id,
+        execution_shard_id=shard.shard_id,
+    )
     device = common._resolve_device(arguments.device or config.device)
     all_specs = tuple(
         _enriched_spec(spec, preflight)
@@ -958,6 +997,8 @@ def run_study(arguments: argparse.Namespace) -> int:
         "schema_version": 1,
         "execution_shard_id": shard.shard_id,
         "execution_shard_key": shard.key,
+        "scientific_project_id": shard.project_id,
+        "comet_project": shard.comet_project,
         "execution_purpose": shard.purpose,
         "model_count": len(all_specs),
         "models": [item.as_dict() for item in all_specs],
@@ -981,9 +1022,7 @@ def run_study(arguments: argparse.Namespace) -> int:
     _refresh_results(config, all_specs, output_directory=execution_directory)
     failed_models: list[str] = []
     for spec in selected:
-        paths = common.TrialPaths.create(
-            config.study_directory / "models" / spec.model_id
-        )
+        paths = common.TrialPaths.create(_model_directory(config.study_directory, spec))
         if paths.summary.is_file():
             completed = common._load_json(paths.summary)
             expected_hash = common._trial_hash(
@@ -1054,13 +1093,17 @@ def run_trial_command(arguments: argparse.Namespace) -> int:
     )
     if preflight is not None:
         spec = _enriched_spec(spec, preflight)
-    study_metadata = _study_metadata(preflight)
+    study_metadata = _study_metadata(
+        preflight,
+        project_id=spec.project_id,
+        execution_shard_id=spec.execution_shard_id,
+    )
     device = common._resolve_device(arguments.device or config.device)
     epochs = config.epochs if arguments.epochs is None else int(arguments.epochs)
     if epochs < 1 or epochs > config.epochs:
         raise ValueError("epoch override is outside the F protocol")
     paths = common.TrialPaths.create(
-        config.study_directory / "models" / spec.model_id
+        _model_directory(config.study_directory, spec)
         if arguments.output_directory is None
         else arguments.output_directory
     )
@@ -1126,11 +1169,10 @@ def run_smoke(arguments: argparse.Namespace) -> int:
     config = make_config(shard.shard_id, study_root=arguments.study_root)
     device = common._resolve_device(arguments.device or config.device)
     defaults = {
-        0: ("F100",),
-        1: ("F101", "F108", "F125"),
-        2: ("F126", "F134", "F150"),
-        3: ("F201", "F208", "F225"),
-        4: ("F226", "F234", "F250"),
+        0: ("F100", "F101", "F125"),
+        1: ("F126", "F134", "F150"),
+        2: ("F201", "F208", "F225"),
+        3: ("F226", "F234", "F250"),
     }
     selected = _select_specs(
         shard.shard_id,
@@ -1139,7 +1181,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
     smoke_root = (
         Path(arguments.output_directory).resolve()
         if arguments.output_directory is not None
-        else config.study_directory / "smoke"
+        else config.study_directory / "smoke" / shard.key
     )
     for spec in selected:
         output = smoke_root / spec.model_id
@@ -1170,8 +1212,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
 
 def run_prepare(arguments: argparse.Namespace) -> int:
     configs = tuple(
-        make_config(shard_id, study_root=arguments.study_root)
-        for shard_id in range(5)
+        make_config(shard_id, study_root=arguments.study_root) for shard_id in range(4)
     )
     protocol_fields = (
         "epochs",
@@ -1201,8 +1242,7 @@ def run_prepare(arguments: argparse.Namespace) -> int:
     )
     reference_protocol = tuple(getattr(configs[0], name) for name in protocol_fields)
     if any(
-        tuple(getattr(config, name) for name in protocol_fields)
-        != reference_protocol
+        tuple(getattr(config, name) for name in protocol_fields) != reference_protocol
         for config in configs[1:]
     ) or any(config.shard_paths != configs[0].shard_paths for config in configs[1:]):
         raise RuntimeError("F execution shards do not share one training protocol")
@@ -1254,17 +1294,17 @@ def _tmux_devices(values: Sequence[str]) -> tuple[str, ...]:
     devices = tuple(str(value) for value in values)
     if not devices:
         visible = torch.cuda.device_count()
-        if visible < 5:
+        if visible < 4:
             raise ValueError(
-                "automatic tmux launch requires five visible CUDA devices; "
-                "provide one --device to share intentionally or five explicit "
+                "automatic tmux launch requires four visible CUDA devices; "
+                "provide one --device to share intentionally or four explicit "
                 "--device mappings"
             )
-        return tuple(f"cuda:{index}" for index in range(5))
+        return tuple(f"cuda:{index}" for index in range(4))
     if len(devices) == 1:
-        return devices * 5
-    if len(devices) != 5:
-        raise ValueError("provide either one device or exactly five devices")
+        return devices * 4
+    if len(devices) != 4:
+        raise ValueError("provide either one device or exactly four devices")
     return devices
 
 
@@ -1273,11 +1313,11 @@ def tmux_launch_commands(
     study_root: str | Path,
     devices: Sequence[str] = (),
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Return the five tmux commands without changing experimental semantics."""
+    """Return the four tmux commands without changing experimental semantics."""
     resolved_devices = _tmux_devices(devices)
     root = str(Path(study_root).resolve())
     result = []
-    for shard_id, device in zip(range(5), resolved_devices):
+    for shard_id, device in zip(range(4), resolved_devices):
         shard = EXECUTION_SHARDS[shard_id]
         job = shlex.join(
             (
@@ -1294,11 +1334,11 @@ def tmux_launch_commands(
             )
         )
         pane_command = (
-            "if [ -z \"${COMET_API_KEY:-}\" ]; then "
+            'if [ -z "${COMET_API_KEY:-}" ]; then '
             "echo 'COMET_API_KEY is unavailable inside tmux'; status=1; "
             f"else {job}; status=$?; fi; "
             f"echo 'F execution shard {shard.key} exited' $status; "
-            "exec \"${SHELL:-/bin/bash}\""
+            'exec "${SHELL:-/bin/bash}"'
         )
         command = (
             "tmux",
@@ -1422,7 +1462,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--device",
         action="append",
         default=[],
-        help="repeat five times for a per-session device mapping",
+        help="repeat four times for a per-session device mapping",
     )
     tmux.add_argument("--dry-run", action="store_true")
     tmux.set_defaults(handler=run_launch_tmux)

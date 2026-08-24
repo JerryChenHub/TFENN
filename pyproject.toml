@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "TFENN"
 version = "0.1.0"
-description = "Tensor basis neural networks for benzene pair force and moment prediction"
+description = "Shared tensor mathematics and typed covariant network components"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.23",

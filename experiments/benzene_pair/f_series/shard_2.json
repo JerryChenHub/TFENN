@@ -2,19 +2,19 @@
   "schema_name": "tfenn_benzene_pair_f_series",
   "schema_version": 1,
   "execution_shard_id": 2,
-  "execution_directory_name": "shard_2_f1_b",
+  "execution_directory_name": "shard_2_f2_a",
   "concurrent_run": true,
-  "tmux_session_count": 5,
+  "tmux_session_count": 4,
   "model_ids": [
-    "F126", "F127", "F128", "F129", "F130", "F131", "F132", "F133", "F134", "F135",
-    "F136", "F137", "F138", "F139", "F140", "F141", "F142", "F143", "F144", "F145",
-    "F146", "F147", "F148", "F149", "F150"
+    "F201", "F202", "F203", "F204", "F205", "F206", "F207", "F208", "F209", "F210",
+    "F211", "F212", "F213", "F214", "F215", "F216", "F217", "F218", "F219", "F220",
+    "F221", "F222", "F223", "F224", "F225"
   ],
   "shard_paths": [
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
   ],
   "epochs": 500,
   "effective_batch_size": 10000,
@@ -42,9 +42,9 @@
   "comet": {
     "enabled": true,
     "required_online": true,
-    "project_name": "tfenn_f_series",
+    "project_name": "tfenn_f_series_f2_raw_only",
     "workspace": null,
     "upload_checkpoints": true,
-    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "f_series", "f1", "shard_b"]
+    "tags": ["tfenn", "benzene_pair", "opls_2_0_0", "f_series", "f2", "shard_a"]
   }
 }

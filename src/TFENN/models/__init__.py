@@ -21,20 +21,6 @@ from .invariant_gate_pipeline_v2 import (
     build_invariant_gate_pipeline_v2,
     default_invariant_gate_pipeline_v2_config,
 )
-from .model_level_group_conv_mlp import (
-    ModelLevelGroupConvMLP,
-    ModelLevelGroupConvMLPConfig,
-    build_model_level_group_conv_mlp,
-)
-from .e_series import (
-    InvariantGateBudgetError,
-    OrdinaryRawMLP,
-    OrdinaryRawMLPConfig,
-    build_budget_compiled_invariant_gate,
-    compact_blueprint_manifest,
-    build_ordinary_raw_mlp,
-    compile_invariant_gate_budget,
-)
 from .strict_dual_stream_flow import (
     StrictDualStreamFlowConfig,
     StrictFlowCompilationError,
@@ -63,16 +49,6 @@ __all__ = [
     "TypedStateV2",
     "build_invariant_gate_pipeline_v2",
     "default_invariant_gate_pipeline_v2_config",
-    "ModelLevelGroupConvMLP",
-    "ModelLevelGroupConvMLPConfig",
-    "build_model_level_group_conv_mlp",
-    "InvariantGateBudgetError",
-    "OrdinaryRawMLP",
-    "OrdinaryRawMLPConfig",
-    "build_budget_compiled_invariant_gate",
-    "compact_blueprint_manifest",
-    "build_ordinary_raw_mlp",
-    "compile_invariant_gate_budget",
     "StrictDualStreamFlowConfig",
     "StrictFlowCompilationError",
     "StrictFlowStageConfig",

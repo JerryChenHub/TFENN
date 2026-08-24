@@ -26,6 +26,7 @@ from torch import Tensor, nn
 from experiments.benzene_pair.comet_logging import (
     CometConfig,
     CometTrialLogger,
+    FULL_METRIC_PROFILE,
     NullCometTrialLogger,
     create_comet_trial_logger,
 )
@@ -44,8 +45,11 @@ from experiments.benzene_pair.train import (
     sha256_file,
     symmetry_metrics,
 )
-from TFENN.data import load_benzene_cluster_csv, load_benzene_cluster_metadata
-from TFENN.models.model_level_group_conv_mlp import (
+from experiments.benzene_pair.data import (
+    load_benzene_cluster_csv,
+    load_benzene_cluster_metadata,
+)
+from experiments.benzene_pair.group_conv_baseline import (
     ModelLevelGroupConvMLPConfig,
     build_model_level_group_conv_mlp,
 )
@@ -456,8 +460,15 @@ def _create_trial_comet_logger(
     paths: TrialPaths,
     *,
     disabled: bool,
+    metric_profile: str = FULL_METRIC_PROFILE,
+    experiment_name: str | None = None,
 ) -> CometLogger:
     comet_config = CometConfig.from_mapping(None) if disabled else config.comet
+    resolved_experiment_name = (
+        spec.model_id if experiment_name is None else str(experiment_name)
+    )
+    if not resolved_experiment_name:
+        raise ValueError("Comet experiment name must not be empty")
     previous: dict[str, Any] | None = None
     backend_factory = None
     if not disabled and paths.comet.is_file():
@@ -466,17 +477,22 @@ def _create_trial_comet_logger(
             raise ValueError("unexpected Comet trial record schema")
         if previous.get("model_id") != spec.model_id:
             raise ValueError("Comet trial record model does not match")
+        if previous.get("experiment_name", spec.model_id) != resolved_experiment_name:
+            raise ValueError("Comet trial record experiment name does not match")
         if previous.get("project_name") != comet_config.project_name:
             raise ValueError("Comet trial record project does not match")
+        if previous.get("metric_profile", FULL_METRIC_PROFILE) != metric_profile:
+            raise ValueError("Comet trial record metric profile does not match")
         experiment_key = str(previous.get("experiment_key", ""))
         if not experiment_key:
             raise ValueError("Comet trial record has no experiment key")
         backend_factory = _comet_resume_backend(experiment_key)
     logger = create_comet_trial_logger(
         comet_config,
-        experiment_name=spec.model_id,
+        experiment_name=resolved_experiment_name,
         study_name=config.study_directory.name,
         tags=(spec.model_id, spec.comparison_role),
+        metric_profile=metric_profile,
         backend_factory=backend_factory,
     )
     if not logger.enabled:
@@ -493,7 +509,9 @@ def _create_trial_comet_logger(
             "schema_name": "tfenn_sweep31_comet_trial",
             "schema_version": 1,
             "model_id": spec.model_id,
+            "experiment_name": resolved_experiment_name,
             "project_name": comet_config.project_name,
+            "metric_profile": metric_profile,
             "experiment_key": experiment_key,
             "identity": identity,
             "last_logged_epoch": -1
@@ -555,7 +573,10 @@ def _source_sha256() -> str:
         Path(__file__).resolve().parent / "invariant_gate_v2_20k_sweep.py",
         Path(__file__).resolve().parent / "metrics.py",
         REPOSITORY_ROOT / "src" / "TFENN" / "models" / "invariant_gate_pipeline_v2.py",
-        REPOSITORY_ROOT / "src" / "TFENN" / "models" / "model_level_group_conv_mlp.py",
+        REPOSITORY_ROOT
+        / "experiments"
+        / "benzene_pair"
+        / "group_conv_baseline.py",
     )
     digest = hashlib.sha256()
     for path in paths:
@@ -1412,7 +1433,6 @@ def run_trial(
                     time.perf_counter() - epoch_started,
                 )
             )
-            _log_comet_epoch(comet_logger, paths, history[-1])
             _history_write(paths.history, history)
             base = _checkpoint_payload(
                 model,
@@ -1445,6 +1465,7 @@ def run_trial(
                     "updated_at_utc": _utc_now(),
                 },
             )
+            _log_comet_epoch(comet_logger, paths, history[-1])
             print(
                 json.dumps(
                     {

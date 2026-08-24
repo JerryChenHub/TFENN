@@ -1,6 +1,6 @@
 {
   "pipeline_version": "v2",
-  "csv_path": "data/benzene_pair/benzene_pair_opls_2_0_0_v3.csv",
+  "csv_path": "experiments/benzene_pair/data/benzene_pair_opls_2_0_0_v3.csv",
   "dataset_revision": 3,
   "output_directory": "experiments/benzene_pair/runs/default_v2",
   "epochs": 500,

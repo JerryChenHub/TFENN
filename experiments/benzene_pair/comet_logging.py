@@ -14,6 +14,9 @@ from typing import Any, Callable, Mapping, Sequence
 BackendFactory = Callable[..., Any]
 _REDACTED = "[redacted]"
 _SENSITIVE_KEYS = ("api_key", "apikey", "password", "secret", "token")
+FULL_METRIC_PROFILE = "full"
+LOSS_TIME_TEST_ERROR_PROFILE = "loss_time_test_error"
+METRIC_PROFILES = (FULL_METRIC_PROFILE, LOSS_TIME_TEST_ERROR_PROFILE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,14 +227,19 @@ class CometTrialLogger:
         config: CometConfig,
         experiment_name: str,
         study_name: str,
+        metric_profile: str = FULL_METRIC_PROFILE,
     ) -> None:
+        if metric_profile not in METRIC_PROFILES:
+            raise ValueError(f"unknown Comet metric profile: {metric_profile}")
         self._backend = backend
         self._config = config
         self._experiment_name = experiment_name
         self._study_name = study_name
+        self._metric_profile = metric_profile
         self._finished = False
         self._backend.log_other("study_name", study_name)
         self._backend.log_other("trial_name", experiment_name)
+        self._backend.log_other("metric_profile", metric_profile)
         self._backend.log_other("status", "running")
 
     @property
@@ -286,6 +294,26 @@ class CometTrialLogger:
         learning_rate: float,
         extra_metrics: Mapping[str, Any] | None = None,
     ) -> None:
+        if self._metric_profile == LOSS_TIME_TEST_ERROR_PROFILE:
+            if int(epoch) <= 0:
+                return
+            if extra_metrics is None or "epoch_duration_seconds" not in extra_metrics:
+                raise ValueError("epoch duration is required by the Comet metric profile")
+            metrics = _numeric_metrics(
+                {
+                    "train_loss": train_loss,
+                    "validation_loss": validation_loss,
+                    "epoch_duration_seconds": extra_metrics["epoch_duration_seconds"],
+                }
+            )
+            if set(metrics) != {
+                "train_loss",
+                "validation_loss",
+                "epoch_duration_seconds",
+            }:
+                raise ValueError("train loss, validation loss, and epoch duration are required")
+            self._backend.log_metrics(metrics, step=int(epoch), epoch=int(epoch))
+            return
         values: dict[str, Any] = {
             "train_normalized_mse": train_loss,
             "validation_normalized_mse": validation_loss,
@@ -305,20 +333,48 @@ class CometTrialLogger:
         relative_force_norm_stats: Mapping[str, Any],
         summary: Mapping[str, Any] | None = None,
     ) -> None:
-        final_metrics = {
-            **_numeric_metrics(metrics, prefix="final"),
-            **_numeric_metrics(
-                relative_force_norm_stats,
-                prefix="relative_norm_force_diff",
-            ),
-        }
+        if self._metric_profile == LOSS_TIME_TEST_ERROR_PROFILE:
+            test_metrics = metrics.get("test")
+            if not isinstance(test_metrics, Mapping):
+                raise ValueError("final test metrics are required by the Comet metric profile")
+            final_metrics = _numeric_metrics(
+                {
+                    "test": {
+                        "mae": test_metrics.get("mae"),
+                        "sae": test_metrics.get("sae"),
+                    }
+                },
+                prefix="final",
+            )
+            if set(final_metrics) != {"final_test_mae", "final_test_sae"}:
+                raise ValueError("final test MAE and SAE are required")
+        else:
+            final_metrics = {
+                **_numeric_metrics(metrics, prefix="final"),
+                **_numeric_metrics(
+                    relative_force_norm_stats,
+                    prefix="relative_norm_force_diff",
+                ),
+            }
         self._backend.log_metrics(final_metrics)
-        final_document: dict[str, Any] = {
-            "metrics": _safe_value(metrics),
-            "relative_norm_force_diff": _safe_value(relative_force_norm_stats),
-        }
-        if summary is not None:
-            final_document["summary"] = _safe_value(summary)
+        if self._metric_profile == LOSS_TIME_TEST_ERROR_PROFILE:
+            final_document: dict[str, Any] = {
+                "metrics": {
+                    "test": {
+                        "mae": final_metrics["final_test_mae"],
+                        "sae": final_metrics["final_test_sae"],
+                    }
+                }
+            }
+        else:
+            final_document = {
+                "metrics": _safe_value(metrics),
+                "relative_norm_force_diff": _safe_value(
+                    relative_force_norm_stats
+                ),
+            }
+            if summary is not None:
+                final_document["summary"] = _safe_value(summary)
         self._backend.log_asset_data(
             json.dumps(
                 final_document,
@@ -341,6 +397,11 @@ class CometTrialLogger:
         asset = Path(path).resolve()
         if not asset.is_file():
             raise FileNotFoundError(asset)
+        if (
+            self._metric_profile == LOSS_TIME_TEST_ERROR_PROFILE
+            and asset.name == "history.csv"
+        ):
+            return
         self._backend.log_asset(
             str(asset),
             file_name=asset.name if name is None else name,
@@ -426,6 +487,7 @@ def create_comet_trial_logger(
     experiment_name: str,
     study_name: str,
     tags: Sequence[str] = (),
+    metric_profile: str = FULL_METRIC_PROFILE,
     backend_factory: BackendFactory | None = None,
 ) -> CometTrialLogger | NullCometTrialLogger:
     """Create a new online experiment or an explicit null logger."""
@@ -450,4 +512,10 @@ def create_comet_trial_logger(
         raise RuntimeError("Comet backend creation returned no experiment")
     if bool(getattr(backend, "disabled", False)):
         raise RuntimeError("Comet returned a disabled experiment")
-    return CometTrialLogger(backend, config, experiment_name, study_name)
+    return CometTrialLogger(
+        backend,
+        config,
+        experiment_name,
+        study_name,
+        metric_profile,
+    )

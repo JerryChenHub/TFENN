@@ -12,7 +12,10 @@ from typing import Any
 
 import numpy as np
 
-from TFENN.data import load_benzene_cluster_csv, load_benzene_cluster_metadata
+from experiments.benzene_pair.data import (
+    load_benzene_cluster_csv,
+    load_benzene_cluster_metadata,
+)
 
 
 def sha256_file(path: str | Path) -> str:

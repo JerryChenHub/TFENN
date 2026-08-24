@@ -14,11 +14,13 @@ __all__ = [
     "F0_SPECS",
     "F1_SPECS",
     "F2_SPECS",
+    "PROJECT_SPECS",
     "EXECUTION_SHARD_SPECS",
     "get_experiment_specs",
     "get_science_experiment_specs",
     "get_execution_shard_specs",
     "get_model_spec",
+    "get_project_specs",
 ]
 
 
@@ -58,8 +60,8 @@ class FModelSpec:
     def __post_init__(self) -> None:
         if self.experiment_id not in range(3):
             raise ValueError("science experiment id must be zero through two")
-        if self.execution_shard_id not in range(5):
-            raise ValueError("execution shard id must be zero through four")
+        if self.execution_shard_id not in range(4):
+            raise ValueError("execution shard id must be zero through three")
         if not self.model_id.startswith("F") or len(self.model_id) != 4:
             raise ValueError("model id must use the F three digit form")
         number = int(self.model_id[1:])
@@ -89,6 +91,11 @@ class FModelSpec:
     @property
     def d6_covariance_exempt(self) -> bool:
         return False
+
+    @property
+    def project_id(self) -> int:
+        """Return the Comet science project while preserving F100 control status."""
+        return 1 if self.experiment_id == 0 else self.experiment_id
 
     def as_dict(self) -> dict[str, Any]:
         value = {
@@ -223,16 +230,14 @@ _T3_ROWS = (
 
 
 def _execution_shard_id(model_number: int) -> int:
-    if model_number == 100:
+    if 100 <= model_number <= 125:
         return 0
-    if 101 <= model_number <= 125:
-        return 1
     if 126 <= model_number <= 150:
-        return 2
+        return 1
     if 201 <= model_number <= 225:
-        return 3
+        return 2
     if 226 <= model_number <= 250:
-        return 4
+        return 3
     raise ValueError(f"model number {model_number} is outside the F catalog")
 
 
@@ -306,12 +311,8 @@ F0_SPECS = (
 _T1_F1, _T1_F2 = _strict_specs("T1", _T1_ROWS)
 _T2_F1, _T2_F2 = _strict_specs("T2", _T2_ROWS)
 _T3_F1, _T3_F2 = _strict_specs("T3", _T3_ROWS)
-F1_SPECS = tuple(
-    sorted((*_T1_F1, *_T2_F1, *_T3_F1), key=lambda spec: spec.model_id)
-)
-F2_SPECS = tuple(
-    sorted((*_T1_F2, *_T2_F2, *_T3_F2), key=lambda spec: spec.model_id)
-)
+F1_SPECS = tuple(sorted((*_T1_F1, *_T2_F1, *_T3_F1), key=lambda spec: spec.model_id))
+F2_SPECS = tuple(sorted((*_T1_F2, *_T2_F2, *_T3_F2), key=lambda spec: spec.model_id))
 F_SERIES_SPECS = tuple(
     sorted(
         (*F0_SPECS, *F1_SPECS, *F2_SPECS),
@@ -321,14 +322,18 @@ F_SERIES_SPECS = tuple(
 
 _BY_ID = MappingProxyType({spec.model_id: spec for spec in F_SERIES_SPECS})
 _BY_EXPERIMENT = MappingProxyType({0: F0_SPECS, 1: F1_SPECS, 2: F2_SPECS})
+PROJECT_SPECS = MappingProxyType(
+    {
+        1: (*F0_SPECS, *F1_SPECS),
+        2: F2_SPECS,
+    }
+)
 EXECUTION_SHARD_SPECS = MappingProxyType(
     {
         shard: tuple(
-            spec
-            for spec in F_SERIES_SPECS
-            if spec.execution_shard_id == shard
+            spec for spec in F_SERIES_SPECS if spec.execution_shard_id == shard
         )
-        for shard in range(5)
+        for shard in range(4)
     }
 )
 
@@ -362,16 +367,28 @@ def get_experiment_specs(experiment: int | str) -> tuple[FModelSpec, ...]:
     return get_science_experiment_specs(experiment)
 
 
+def get_project_specs(project: int | str) -> tuple[FModelSpec, ...]:
+    normalized = str(project).lower()
+    for prefix in ("project_", "f"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    value = int(normalized)
+    try:
+        return tuple(PROJECT_SPECS[value])
+    except KeyError as error:
+        raise KeyError(f"unknown F project {project}") from error
+
+
 def get_execution_shard_specs(shard: int | str) -> tuple[FModelSpec, ...]:
     value: int
     if isinstance(shard, str):
         normalized = shard.lower()
         aliases = {
-            "control": 0,
-            "f1a": 1,
-            "f1b": 2,
-            "f2a": 3,
-            "f2b": 4,
+            "f1a": 0,
+            "f1b": 1,
+            "f2a": 2,
+            "f2b": 3,
         }
         if normalized in aliases:
             value = aliases[normalized]

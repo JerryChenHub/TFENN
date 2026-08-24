@@ -222,15 +222,24 @@ def _source_sha256() -> str:
         REPOSITORY_ROOT / "experiments" / "benzene_pair" / "metrics.py",
         REPOSITORY_ROOT / "experiments" / "benzene_pair" / "train.py",
         REPOSITORY_ROOT / "src" / "TFENN" / "models" / "invariant_gate_pipeline_v2.py",
-        REPOSITORY_ROOT / "src" / "TFENN" / "models" / "e_series.py",
-        REPOSITORY_ROOT / "src" / "TFENN" / "models" / "model_level_group_conv_mlp.py",
+        REPOSITORY_ROOT
+        / "experiments"
+        / "benzene_pair"
+        / "e_series"
+        / "model_support.py",
+        REPOSITORY_ROOT
+        / "experiments"
+        / "benzene_pair"
+        / "group_conv_baseline.py",
         REPOSITORY_ROOT / "src" / "TFENN" / "models" / "__init__.py",
     )
     dependency_paths = tuple(
         sorted(
             (
                 *(REPOSITORY_ROOT / "src" / "TFENN" / "tensor_math").rglob("*.py"),
-                *(REPOSITORY_ROOT / "src" / "TFENN" / "data").rglob("*.py"),
+                *(
+                    REPOSITORY_ROOT / "experiments" / "benzene_pair" / "data"
+                ).rglob("*.py"),
             ),
             key=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix(),
         )

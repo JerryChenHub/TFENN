@@ -29,9 +29,11 @@ venv/
 /Log
 /Archive/
 /tmp/
+/outputs/
 /.legacy/
 /experiments/**/runs/
-/experiments/*/HISTORY.tar.gz
+/experiments/**/HISTORY.tar.gz
+/experiments/benzene_pair/records/legacy/*.tar.gz
 
 build/
 dist/

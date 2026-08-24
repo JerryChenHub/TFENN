@@ -10,11 +10,13 @@ from torch import Tensor, nn
 from TFENN.models import (
     InvariantGatePipelineV2Config,
     InvariantGateStageV2Config,
-    OrdinaryRawMLPConfig,
-    build_ordinary_raw_mlp,
     build_invariant_gate_pipeline_v2,
 )
-from TFENN.models.model_level_group_conv_mlp import (
+from experiments.benzene_pair.e_series.model_support import (
+    OrdinaryRawMLPConfig,
+    build_ordinary_raw_mlp,
+)
+from experiments.benzene_pair.group_conv_baseline import (
     ModelLevelGroupConvMLPConfig,
     build_model_level_group_conv_mlp,
 )
@@ -140,7 +142,9 @@ def _build_budget_compiled(
     generators: Tensor,
     generator_names: Sequence[str] | None,
 ) -> nn.Module:
-    from TFENN.models import build_budget_compiled_invariant_gate
+    from experiments.benzene_pair.e_series.model_support import (
+        build_budget_compiled_invariant_gate,
+    )
 
     return build_budget_compiled_invariant_gate(
         generators,

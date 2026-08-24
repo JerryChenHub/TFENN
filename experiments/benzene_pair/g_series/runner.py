@@ -21,7 +21,10 @@ import torch
 from torch import nn
 
 from experiments.benzene_pair import sweep30 as common
-from experiments.benzene_pair.comet_logging import NullCometTrialLogger
+from experiments.benzene_pair.comet_logging import (
+    LOSS_TIME_TEST_ERROR_PROFILE,
+    NullCometTrialLogger,
+)
 from experiments.benzene_pair.g_series.catalog import (
     GModelSpec,
     G_SERIES_SPECS,
@@ -155,6 +158,7 @@ RESULT_FIELDS = (
     "train_mae",
     "validation_mae",
     "test_mae",
+    "test_sae",
     "train_rmse",
     "validation_rmse",
     "test_rmse",
@@ -309,11 +313,29 @@ def _config_for_spec(config: GSeriesConfig, spec: GModelSpec) -> GSeriesConfig:
     return result
 
 
-def _require_cpu_device(requested: str | None, config: GSeriesConfig) -> str:
+def _resolve_execution_device(requested: str | None, config: GSeriesConfig) -> str:
     device = common._resolve_device(config.device if requested is None else requested)
-    if device != "cpu":
-        raise ValueError("formal G training and smoke checks are CPU-only")
-    return device
+    try:
+        parsed = torch.device(device)
+    except (RuntimeError, ValueError) as error:
+        raise ValueError(f"invalid G execution device: {device}") from error
+    if parsed.type not in {"cpu", "cuda"}:
+        raise ValueError("G training supports only CPU and CUDA devices")
+    return str(parsed)
+
+
+def _config_for_device(config: GSeriesConfig, device: str) -> GSeriesConfig:
+    if torch.device(device).type != "cuda":
+        return config
+    tags = tuple(item for item in config.comet.tags if item not in {"cpu", "cuda"})
+    result = replace(
+        config,
+        comet=replace(config.comet, tags=(*tags, "cuda")),
+    )
+    if not isinstance(result, GSeriesConfig):
+        raise TypeError("G device replacement changed the config type")
+    result.validate()
+    return result
 
 
 def _source_sha256() -> str:
@@ -340,7 +362,13 @@ def _source_sha256() -> str:
                 *(
                     REPOSITORY_ROOT / "src" / "TFENN" / "tensor_math"
                 ).rglob("*.py"),
-                *(REPOSITORY_ROOT / "src" / "TFENN" / "data").rglob("*.py"),
+                *(
+                    REPOSITORY_ROOT / "experiments" / "benzene_pair" / "data"
+                ).rglob("*.py"),
+                REPOSITORY_ROOT
+                / "experiments"
+                / "benzene_pair"
+                / "group_conv_baseline.py",
             ),
             key=lambda item: item.relative_to(REPOSITORY_ROOT).as_posix(),
         )
@@ -450,9 +478,10 @@ def _load_shared_split(
     return split, manifest
 
 
-def _study_metadata() -> dict[str, Any]:
+def _study_metadata(device: str) -> dict[str, Any]:
     return {
         **G_STUDY_METADATA,
+        "execution_device": device,
         "reference_split_manifest_hash": E311_SPLIT_MANIFEST_HASH,
         "reference_split_indices_sha256": E311_SPLIT_INDICES_SHA256,
     }
@@ -478,7 +507,7 @@ def _study_manifest(
         "split_manifest_hash": split_manifest["manifest_hash"],
         "split_indices_sha256": split_manifest["indices_sha256"],
         "source_sha256": source_sha256,
-        **_study_metadata(),
+        **_study_metadata(device),
     }
     value["study_hash"] = common._canonical_sha256(value)
     return value
@@ -599,6 +628,7 @@ def _result_row(config: GSeriesConfig, spec: GModelSpec) -> dict[str, Any]:
         "train_mae": metric("train", "mae"),
         "validation_mae": metric("validation", "mae"),
         "test_mae": metric("test", "mae"),
+        "test_sae": metric("test", "sae"),
         "train_rmse": metric("train", "rmse"),
         "validation_rmse": metric("validation", "rmse"),
         "test_rmse": metric("test", "rmse"),
@@ -1067,13 +1097,14 @@ def _refresh_results(config: GSeriesConfig) -> Path:
 
 def run_study(arguments: argparse.Namespace) -> int:
     config = make_config(study_root=arguments.study_root)
-    device = _require_cpu_device(arguments.device, config)
+    device = _resolve_execution_device(arguments.device, config)
+    config = _config_for_device(config, device)
     if not os.environ.get("COMET_API_KEY", "").strip():
         raise RuntimeError("COMET_API_KEY must be set for a formal G series run")
     _split, split_manifest = _load_shared_split(arguments.study_root)
     selected = _select_specs(arguments.group, arguments.model)
     source_sha256 = _source_sha256()
-    study_metadata = _study_metadata()
+    study_metadata = _study_metadata(device)
     manifest = _study_manifest(
         config,
         split_manifest,
@@ -1128,7 +1159,7 @@ def run_study(arguments: argparse.Namespace) -> int:
             "--model",
             spec.model_id,
             "--device",
-            "cpu",
+            device,
         ]
         with (
             paths.stdout.open("a", encoding="utf_8") as stdout,
@@ -1159,8 +1190,9 @@ def run_study(arguments: argparse.Namespace) -> int:
 def run_trial_command(arguments: argparse.Namespace) -> int:
     spec = get_model_spec(arguments.model)
     base_config = make_config(study_root=arguments.study_root)
+    device = _resolve_execution_device(arguments.device, base_config)
+    base_config = _config_for_device(base_config, device)
     config = _config_for_spec(base_config, spec)
-    device = _require_cpu_device(arguments.device, config)
     epochs = config.epochs if arguments.epochs is None else int(arguments.epochs)
     if epochs < 1 or epochs > config.epochs:
         raise ValueError("epoch override is outside the G protocol")
@@ -1188,6 +1220,10 @@ def run_trial_command(arguments: argparse.Namespace) -> int:
             spec,
             paths,
             disabled=arguments.disable_comet,
+            metric_profile=LOSS_TIME_TEST_ERROR_PROFILE,
+            experiment_name=(
+                f"{spec.model_id}_" if device.startswith("cuda") else spec.model_id
+            ),
         )
         if arguments.sample_limit is None:
             split, split_manifest = _load_shared_split(arguments.study_root)
@@ -1218,7 +1254,7 @@ def run_trial_command(arguments: argparse.Namespace) -> int:
             model_builder=_build_model,
             selected_model_audit_hook=_selected_model_audit,
             source_sha256=_source_sha256(),
-            study_metadata=_study_metadata(),
+            study_metadata=_study_metadata(device),
         )
         print(json.dumps({"status": "complete", "summary": str(paths.summary)}))
         return 0 if summary["status"] == "complete" else 1
@@ -1238,7 +1274,8 @@ def run_trial_command(arguments: argparse.Namespace) -> int:
 
 def run_smoke(arguments: argparse.Namespace) -> int:
     config = make_config(study_root=arguments.study_root)
-    device = _require_cpu_device(arguments.device, config)
+    device = _resolve_execution_device(arguments.device, config)
+    config = _config_for_device(config, device)
     available = _select_specs(arguments.group, ())
     selected = (
         _select_specs(arguments.group, arguments.model)
@@ -1278,7 +1315,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
 
 def run_prepare(arguments: argparse.Namespace) -> int:
     config = make_config(study_root=arguments.study_root)
-    _require_cpu_device(None, config)
+    _resolve_execution_device(None, config)
     if arguments.reference_split_directory is None:
         _split, manifest = _load_shared_split(arguments.study_root)
     else:

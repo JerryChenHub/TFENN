@@ -11,10 +11,10 @@
     "D71", "D72", "D73", "D74", "D75"
   ],
   "shard_paths": [
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
-    "data/benzene_pair/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_01.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_02.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_03.csv",
+    "experiments/benzene_pair/data/v3_100k_shards/benzene_pair_opls_2_0_0_v3_100k_shard_04.csv"
   ],
   "epochs": 500,
   "effective_batch_size": 10000,
