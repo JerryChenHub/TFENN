@@ -1,5 +1,14 @@
 """Networks built from fixed tensor mathematics."""
 
+from .e311_multibody_message_block_v1 import (
+    E311MessageBlockConfigV1,
+    E311MultibodyMessageBlockV1,
+    E311PairMessageKernelV1,
+    GraphMessageBlockOutputV1,
+    PairMessageOutputV1,
+    PairTraceV1,
+    build_e311_multibody_message_block_v1,
+)
 from .invariant_gate_pipeline_v2 import (
     CandidateAuditV2,
     ChannelProjection,
@@ -36,6 +45,10 @@ __all__ = [
     "CoefficientHead",
     "Degree3Policy",
     "DescriptorMask",
+    "E311MessageBlockConfigV1",
+    "E311MultibodyMessageBlockV1",
+    "E311PairMessageKernelV1",
+    "GraphMessageBlockOutputV1",
     "InvariantGatePipelineV2",
     "InvariantGatePipelineV2Config",
     "InvariantGateStageV2Config",
@@ -44,9 +57,12 @@ __all__ = [
     "PipelineV2Debug",
     "RadialFeaturesV2Config",
     "MetricGate",
+    "PairMessageOutputV1",
+    "PairTraceV1",
     "PathAggregation",
     "SkipPolicy",
     "TypedStateV2",
+    "build_e311_multibody_message_block_v1",
     "build_invariant_gate_pipeline_v2",
     "default_invariant_gate_pipeline_v2_config",
     "StrictDualStreamFlowConfig",

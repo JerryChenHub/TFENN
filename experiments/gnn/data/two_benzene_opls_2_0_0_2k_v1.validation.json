@@ -1,0 +1,410 @@
+{
+  "schema_name": "tfenn_benzene_pair_data_validation",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-26T14:30:12.230118+00:00",
+  "csv_path": "D:\\Python\\Projects\\TFENN\\experiments\\gnn\\data\\two_benzene_opls_2_0_0_2k_v1.csv",
+  "metadata_path": "D:\\Python\\Projects\\TFENN\\experiments\\gnn\\data\\two_benzene_opls_2_0_0_2k_v1.json",
+  "csv_sha256": "7516921848120d54cbc22d0419cbca8066dba594dc01b6b0a9cb4eb2531c9998",
+  "metadata_sha256": "c9031691bc2a0f45736e292a583e48af4a270808969534ac1ce84c3476354333",
+  "opls_distribution_version": "2.0.0",
+  "passed": true,
+  "checks": {
+    "sample_count": true,
+    "molecule_count": true,
+    "metadata_sample_count": true,
+    "metadata_molecule_count": true,
+    "csv_sha256": true,
+    "opls_runtime_version": true,
+    "finite": true,
+    "root_center": true,
+    "root_rotation": true,
+    "rotation_orthogonality": true,
+    "rotation_determinant": true,
+    "distance_range": true,
+    "minimum_atomic_distance": true,
+    "force_conservation": true,
+    "angular_conservation": true,
+    "unique_poses": true,
+    "nonzero_force_targets": true,
+    "force_norm_health": true,
+    "moment_norm_health": true,
+    "opls_force_recompute": true,
+    "opls_moment_recompute": true
+  },
+  "statistics": {
+    "sample_count": 2000,
+    "unique_pose_count": 2000,
+    "center_distance_A": {
+      "p0": 5.00069383737155,
+      "p1": 5.031756842283038,
+      "p50": 5.521392138450148,
+      "p95": 5.77442575106022,
+      "p99": 5.795424299770752,
+      "p100": 5.799995895847303
+    },
+    "minimum_atomic_distance_A": {
+      "p0": 3.200558598972669,
+      "p1": 3.2050696666951084,
+      "p50": 3.5669730844556495,
+      "p95": 4.522001533399729,
+      "p99": 4.921731891030398,
+      "p100": 5.5473019219849
+    },
+    "force_norm_kcal_mol_A": {
+      "p0": 0.18799980126738614,
+      "p1": 0.3912631536481655,
+      "p50": 1.0009166072019822,
+      "p95": 1.3429096691494904,
+      "p99": 1.4101738373334687,
+      "p100": 1.443010363920724
+    },
+    "moment_norm_kcal_mol": {
+      "p0": 0.007013747046607652,
+      "p1": 0.08260236358237506,
+      "p50": 0.8888914045668872,
+      "p95": 1.6631686802495615,
+      "p99": 1.8615902273809246,
+      "p100": 2.0876793395204833
+    },
+    "maximum_root_center_error": 0.0,
+    "maximum_root_rotation_error": 0.0,
+    "maximum_rotation_orthogonality_error": 1.3322676295501878e-15,
+    "maximum_rotation_determinant_error": 1.3322676295501878e-15,
+    "maximum_total_force_norm": 1.4427560722082318e-15,
+    "maximum_total_angular_norm": 4.91432434050019e-15
+  },
+  "recomputed": {
+    "sample_count": 64,
+    "maximum_force_error": 0.0,
+    "maximum_moment_error": 0.0,
+    "records": [
+      {
+        "sample_index": 0,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 31,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 63,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 95,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 126,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 158,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 190,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 222,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 253,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 285,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 317,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 349,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 380,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 412,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 444,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 475,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 507,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 539,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 571,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 602,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 634,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 666,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 698,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 729,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 761,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 793,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 824,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 856,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 888,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 920,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 951,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 983,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1015,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1047,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1078,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1110,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1142,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1174,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1205,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1237,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1269,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1300,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1332,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1364,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1396,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1427,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1459,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1491,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1523,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1554,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1586,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1618,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1649,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1681,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1713,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1745,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1776,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1808,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1840,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1872,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1903,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1935,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1967,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      },
+      {
+        "sample_index": 1999,
+        "maximum_force_error": 0.0,
+        "maximum_moment_error": 0.0
+      }
+    ]
+  },
+  "thresholds": {
+    "expected_sample_count": 2000,
+    "numerical_tolerance": 1e-10,
+    "recompute_count": 64,
+    "max_force_norm_kcal_mol_A": 3.0,
+    "max_moment_norm_kcal_mol": 4.0
+  }
+}

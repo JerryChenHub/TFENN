@@ -1,0 +1,127 @@
+{
+  "schema_name": "tfenn_five_benzene_pair_force_supervision",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-25T22:53:42.363745+00:00",
+  "source": {
+    "csv_path": "D:\\Python\\Projects\\TFENN\\experiments\\gnn\\data\\five_benzene_opls_2_0_0_1k_v1.csv",
+    "csv_sha256": "5ac461c8c5d53188b69e96f67323ca9d501524657a2eaab53aec16b2786d5c0d",
+    "sample_count": 1000,
+    "molecule_count": 5
+  },
+  "opls_runtime": {
+    "runtime_version": "2.0.0",
+    "distribution_version": "2.0.0",
+    "source_commit": "a5f874ed00152b156cd2525c961bd81030237e31",
+    "direct_url": {
+      "url": "https://github.com/JerryChenHub/OPLS2020_Static.git",
+      "vcs_info": {
+        "commit_id": "a5f874ed00152b156cd2525c961bd81030237e31",
+        "requested_revision": "a5f874ed00152b156cd2525c961bd81030237e31",
+        "vcs": "git"
+      }
+    },
+    "engine": "StaticEngine",
+    "use_neighbor_list": false,
+    "boundary": "open",
+    "electrostatics": "direct"
+  },
+  "pair_contract": {
+    "pair_count": 10,
+    "pair_index": [
+      [
+        0,
+        1
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        0,
+        3
+      ],
+      [
+        0,
+        4
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        4
+      ]
+    ],
+    "orientation": "first index receives force from second index",
+    "reverse_force": "negative of stored force",
+    "aggregation": "add stored force to first index and subtract it from second index"
+  },
+  "arrays": {
+    "sample_id": {
+      "shape": [
+        1000
+      ],
+      "dtype": "int64"
+    },
+    "pair_index": {
+      "shape": [
+        10,
+        2
+      ],
+      "dtype": "int64"
+    },
+    "pair_force_kcal_mol_A": {
+      "shape": [
+        1000,
+        10,
+        3
+      ],
+      "dtype": "float64",
+      "unit": "kcal_per_mol_per_angstrom"
+    }
+  },
+  "validation": {
+    "passed": true,
+    "tolerance": 5e-10,
+    "maximum_reverse_component_residual": 1.7208456881689926e-15,
+    "maximum_reaggregation_component_residual": 6.069766911309671e-11
+  },
+  "statistics": {
+    "pair_force_component_rms_kcal_mol_A": 0.32675473784010306,
+    "pair_force_norm_kcal_mol_A": {
+      "p0": 0.002348212389480007,
+      "p1": 0.009592749925509883,
+      "p5": 0.017963455326816022,
+      "p25": 0.07203720179730633,
+      "p50": 0.2566094605339273,
+      "p75": 0.5921597159884272,
+      "p95": 1.1205485528681747,
+      "p99": 1.8927767612220856,
+      "p100": 4.088707192374556
+    }
+  },
+  "artifacts": {
+    "npz_path": "D:\\Python\\Projects\\TFENN\\experiments\\gnn\\data\\five_benzene_opls_2_0_0_1k_v1_pair_forces.npz",
+    "npz_sha256": "49ad6aeb5970bd8505d51e61d694accab221dc7b7a21122ab521b903055115a8",
+    "generator_path": "D:\\Python\\Projects\\TFENN\\experiments\\gnn\\data\\derive_pair_forces.py",
+    "generator_sha256": "3b42bb1af4c6a2bac95c31afa37c132c06b0f0020d73d602ef54506416869b97"
+  },
+  "workers": 12
+}
