@@ -72,6 +72,34 @@ Y15_OPLS_VERSION = "2.0.0"
 Y15_OPLS_COMMIT = "a5f874ed00152b156cd2525c961bd81030237e31"
 
 
+def _resolve_training_protocol(
+    experiment_id: str,
+    epochs: int | None,
+    batch_size: int | None,
+) -> tuple[Any, int, int]:
+    spec = get_y_pair_control_spec_v1(experiment_id)
+    resolved_epochs = spec.epochs if epochs is None else int(epochs)
+    resolved_batch_size = (
+        spec.graph_batch_size if batch_size is None else int(batch_size)
+    )
+    if resolved_epochs < 1:
+        raise ValueError("epochs must be positive")
+    if resolved_batch_size < 1:
+        raise ValueError("batch size must be positive")
+    return spec, resolved_epochs, resolved_batch_size
+
+
+def _resolved_experiment_name(
+    base_name: str,
+    spec: Any,
+    epochs: int,
+    batch_size: int,
+) -> str:
+    if epochs == spec.epochs and batch_size == spec.graph_batch_size:
+        return base_name
+    return f"{base_name}_BS{batch_size}_E{epochs}"
+
+
 def _formal_comet_config(
     project: str,
     workspace: str | None,
@@ -354,21 +382,36 @@ def run_y13_exact_reproduction_v1(
     device: str,
     comet_project: str = DEFAULT_COMET_PROJECT,
     comet_workspace: str | None = None,
+    output_directory: Path | None = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
 ) -> Path:
-    """Run the exact historical non-GNN E311 path without reimplementation."""
+    """Run the historical non GNN E311 path with controlled protocol values."""
 
     assert_historical_e311_definition_v1()
+    control_spec, resolved_epochs, resolved_batch_size = _resolve_training_protocol(
+        "Y13",
+        epochs,
+        batch_size,
+    )
+    runtime_control_spec = replace(
+        control_spec,
+        epochs=resolved_epochs,
+        graph_batch_size=resolved_batch_size,
+    )
     study_root = study_root.resolve()
-    completed = (
+    resolved_output_directory = (
         study_root
         / "e3_path_gate_width"
         / "models"
         / HISTORICAL_E311_MODEL_ID
-        / "summary.json"
+        if output_directory is None
+        else output_directory.resolve()
     )
+    completed = resolved_output_directory / "summary.json"
     if completed.exists():
         raise FileExistsError(
-            "Y13 requires a fresh study root; an E311 summary already exists"
+            "Y13 requires a fresh output directory; an E311 summary already exists"
         )
     if not os.environ.get("COMET_API_KEY", "").strip():
         raise RuntimeError("formal exact Y13 requires COMET_API_KEY")
@@ -381,8 +424,17 @@ def run_y13_exact_reproduction_v1(
         preflight,
     )
     config = e_runner.make_config(3, study_root=study_root)
+    runtime_study_directory = (
+        config.study_directory
+        if output_directory is None
+        else resolved_output_directory.parent
+    )
     config = replace(
         config,
+        study_directory=runtime_study_directory,
+        epochs=resolved_epochs,
+        effective_batch_size=resolved_batch_size,
+        micro_batch_size=resolved_batch_size,
         comet=_formal_comet_config(
             comet_project,
             comet_workspace,
@@ -391,32 +443,45 @@ def run_y13_exact_reproduction_v1(
     )
     split_directory = e_runner._shared_split_directory(study_root)
     split, split_manifest = e_common._load_split(split_directory)
-    paths = e_common.TrialPaths.create(
-        config.study_directory / "models" / HISTORICAL_E311_MODEL_ID
+    paths = e_common.TrialPaths.create(resolved_output_directory)
+    experiment_name = _resolved_experiment_name(
+        "Y13_E311_Exact_400K",
+        control_spec,
+        resolved_epochs,
+        resolved_batch_size,
     )
     alias = {
         "schema_name": "tfenn_y13_exact_e311_alias",
         "schema_version": 1,
-        "experiment": get_y_pair_control_spec_v1("Y13").as_dict(),
+        "experiment": runtime_control_spec.as_dict(),
         "delegated_module": "experiments.benzene_pair.sweep30.run_trial",
         "delegated_command": {
             "experiment": 3,
             "model": HISTORICAL_E311_MODEL_ID,
             "device": device,
+            "epochs": resolved_epochs,
+            "batch_size": resolved_batch_size,
         },
+        "experiment_name": experiment_name,
+        "output_directory": str(resolved_output_directory),
         "comet_project": config.comet.project_name,
         "preflight_hash": preflight["preflight_hash"],
         "source_sha256": _source_sha256(),
         "git_commit": _git_commit(),
         "created_at_utc": _utc_now(),
     }
-    _write_json_atomic(study_root / "y13_exact_e311_alias.json", alias)
+    alias_path = (
+        study_root / "y13_exact_e311_alias.json"
+        if output_directory is None
+        else resolved_output_directory / "y13_exact_e311_alias.json"
+    )
+    _write_json_atomic(alias_path, alias)
     logger: Any = NullCometTrialLogger()
     try:
         logger = _create_strict_y_series_comet_logger(
             comet_path=paths.comet,
             model_id=HISTORICAL_E311_MODEL_ID,
-            experiment_name="Y13_E311_Exact_400K",
+            experiment_name=experiment_name,
             project=config.comet.project_name,
             workspace=config.comet.workspace,
         )
@@ -428,7 +493,7 @@ def run_y13_exact_reproduction_v1(
             split_manifest,
             logger,
             device=str(_resolve_device(device)),
-            epochs=config.epochs,
+            epochs=resolved_epochs,
             model_builder=e_runner._build_model,
             source_sha256=e_runner._source_sha256(),
             study_metadata={
@@ -436,6 +501,8 @@ def run_y13_exact_reproduction_v1(
                 "series": "Y13_Y15_pair_controls_v1",
                 "experiment_id": "Y13",
                 "comet_project": config.comet.project_name,
+                "epochs": resolved_epochs,
+                "batch_size": resolved_batch_size,
             },
         )
     except KeyboardInterrupt:
@@ -541,22 +608,28 @@ def run_y14_odd_graph_400k_v1(
     device: str,
     comet_project: str = DEFAULT_COMET_PROJECT,
     comet_workspace: str | None = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
 ) -> Path:
     """Run Y14 on the exact Y13 data and split using the common E runner."""
 
-    spec = get_y_pair_control_spec_v1("Y14")
+    control_spec, resolved_epochs, resolved_batch_size = _resolve_training_protocol(
+        "Y14",
+        epochs,
+        batch_size,
+    )
     e_study_root = e_study_root.resolve()
     split_directory = e_runner._shared_split_directory(e_study_root)
     split, split_manifest = e_common._load_split(split_directory)
     config = e_runner.make_config(3, study_root=e_study_root)
     if (
-        config.expected_sample_count != spec.sample_count
-        or config.epochs != spec.epochs
-        or config.effective_batch_size != spec.graph_batch_size
-        or config.micro_batch_size != spec.graph_batch_size
+        config.expected_sample_count != control_spec.sample_count
+        or config.epochs != control_spec.epochs
+        or config.effective_batch_size != control_spec.graph_batch_size
+        or config.micro_batch_size != control_spec.graph_batch_size
         or config.learning_rate != 0.003
         or config.weight_decay != 1.0e-4
-        or config.scheduler_step_size != spec.scheduler_step_size
+        or config.scheduler_step_size != control_spec.scheduler_step_size
         or config.scheduler_gamma != 0.5
         or config.validation_every != 1
         or config.split_seed != HISTORICAL_SPLIT_SEED
@@ -573,21 +646,35 @@ def run_y14_odd_graph_400k_v1(
     paths = e_common.TrialPaths.create(output_directory)
     if paths.summary.exists():
         raise FileExistsError(paths.summary)
+    spec = replace(
+        control_spec,
+        epochs=resolved_epochs,
+        graph_batch_size=resolved_batch_size,
+    )
     config = replace(
         config,
         study_directory=output_directory.parent,
+        epochs=resolved_epochs,
+        effective_batch_size=resolved_batch_size,
+        micro_batch_size=resolved_batch_size,
         comet=_formal_comet_config(
             comet_project,
             comet_workspace,
             "Y14",
         ),
     )
+    experiment_name = _resolved_experiment_name(
+        "Y14_E311_OddGraph_400K",
+        control_spec,
+        resolved_epochs,
+        resolved_batch_size,
+    )
     logger: Any = NullCometTrialLogger()
     try:
         logger = _create_strict_y_series_comet_logger(
             comet_path=paths.comet,
             model_id="Y14",
-            experiment_name="Y14_E311_OddGraph_400K",
+            experiment_name=experiment_name,
             project=config.comet.project_name,
             workspace=config.comet.workspace,
         )
@@ -599,7 +686,7 @@ def run_y14_odd_graph_400k_v1(
             split_manifest,
             logger,
             device=str(_resolve_device(device)),
-            epochs=spec.epochs,
+            epochs=resolved_epochs,
             model_builder=_build_y14_model,
             selected_model_audit_hook=_y14_selected_audit,
             source_sha256=_source_sha256(),
@@ -611,8 +698,14 @@ def run_y14_odd_graph_400k_v1(
                 "shared_split_manifest_hash": split_manifest["manifest_hash"],
                 "only_trainable_module": "historical_E311",
                 "running_rms_population": "both_endpoint_orientations",
-                "train_labeled_pair_exposures": 160_000_000,
-                "train_ordered_kernel_evaluations": 320_000_000,
+                "epochs": resolved_epochs,
+                "batch_size": resolved_batch_size,
+                "train_labeled_pair_exposures": (
+                    resolved_epochs * split.counts()["train"]
+                ),
+                "train_ordered_kernel_evaluations": (
+                    2 * resolved_epochs * split.counts()["train"]
+                ),
             },
         )
     except KeyboardInterrupt:
@@ -1275,10 +1368,17 @@ def _run_y15_odd_graph_5b100k_v1(
     output_directory: Path,
     device_value: str,
     comet_logger: Any,
+    epochs: int,
+    batch_size: int,
 ) -> Path:
     """Train the shared E311 OddGraph on 100k five-benzene configurations."""
 
-    spec = get_y_pair_control_spec_v1("Y15")
+    control_spec = get_y_pair_control_spec_v1("Y15")
+    spec = replace(
+        control_spec,
+        epochs=int(epochs),
+        graph_batch_size=int(batch_size),
+    )
     device = _resolve_device(device_value)
     output_directory = output_directory.resolve()
     summary_path = output_directory / "summary.json"
@@ -1643,21 +1743,34 @@ def run_y15_odd_graph_5b100k_v1(
     device_value: str,
     comet_project: str = DEFAULT_COMET_PROJECT,
     comet_workspace: str | None = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
 ) -> Path:
     """Run formal Y15 with the strict Y-series Comet metric contract."""
 
+    control_spec, resolved_epochs, resolved_batch_size = _resolve_training_protocol(
+        "Y15",
+        epochs,
+        batch_size,
+    )
     output_directory = output_directory.resolve()
     summary_path = output_directory / "summary.json"
     status_path = output_directory / "status.json"
     if summary_path.exists():
         raise FileExistsError(summary_path)
     output_directory.mkdir(parents=True, exist_ok=True)
+    experiment_name = _resolved_experiment_name(
+        "Y15_E311_OddGraph_5B100K",
+        control_spec,
+        resolved_epochs,
+        resolved_batch_size,
+    )
     logger: Any = NullCometTrialLogger()
     try:
         logger = _create_strict_y_series_comet_logger(
             comet_path=output_directory / "comet.json",
             model_id="Y15",
-            experiment_name="Y15_E311_OddGraph_5B100K",
+            experiment_name=experiment_name,
             project=_formal_comet_config(
                 comet_project,
                 comet_workspace,
@@ -1671,6 +1784,8 @@ def run_y15_odd_graph_5b100k_v1(
             output_directory,
             device_value,
             logger,
+            resolved_epochs,
+            resolved_batch_size,
         )
     except KeyboardInterrupt:
         current = (
@@ -1722,6 +1837,7 @@ def build_argument_parser_v1() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_OUTPUT_ROOT / "Y13_exact_e311_400k",
     )
+    y13.add_argument("--output-directory", type=Path)
     y13.add_argument("--device", default="cuda")
 
     y14 = commands.add_parser("y14", help="two-node E311 OddGraph control")
@@ -1743,6 +1859,8 @@ def build_argument_parser_v1() -> argparse.ArgumentParser:
     )
     y15.add_argument("--device", default="cuda")
     for command in (y13, y14, y15):
+        command.add_argument("--epochs", type=int)
+        command.add_argument("--batch-size", type=int)
         command.add_argument("--comet-project", default=DEFAULT_COMET_PROJECT)
         command.add_argument("--comet-workspace")
     return parser
@@ -1756,6 +1874,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.device,
             arguments.comet_project,
             arguments.comet_workspace,
+            output_directory=arguments.output_directory,
+            epochs=arguments.epochs,
+            batch_size=arguments.batch_size,
         )
     elif arguments.command == "y14":
         result = run_y14_odd_graph_400k_v1(
@@ -1764,6 +1885,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.device,
             arguments.comet_project,
             arguments.comet_workspace,
+            epochs=arguments.epochs,
+            batch_size=arguments.batch_size,
         )
     else:
         result = run_y15_odd_graph_5b100k_v1(
@@ -1773,6 +1896,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.device,
             arguments.comet_project,
             arguments.comet_workspace,
+            epochs=arguments.epochs,
+            batch_size=arguments.batch_size,
         )
     print(json.dumps({"status": "complete", "result": str(result)}))
     return 0

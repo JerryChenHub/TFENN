@@ -16,6 +16,8 @@ from experiments.gnn.e311_y13_y15_pair_control_runner_v1 import (
     _deterministic_group_split,
     _formal_comet_config,
     _numpy_signed_scatter,
+    _resolve_training_protocol,
+    _resolved_experiment_name,
     _selected_y15_metrics,
     _update_strict_comet_epoch_record,
     build_argument_parser_v1,
@@ -44,7 +46,19 @@ def test_pair_target_contract_reaggregates_with_zero_total_force() -> None:
 def test_cli_has_three_separate_experiment_commands(tmp_path) -> None:
     parser = build_argument_parser_v1()
     y13 = parser.parse_args(
-        ("y13", "--study-root", str(tmp_path / "e"), "--device", "cpu")
+        (
+            "y13",
+            "--study-root",
+            str(tmp_path / "e"),
+            "--output-directory",
+            str(tmp_path / "y13_repeat"),
+            "--epochs",
+            "1000",
+            "--batch-size",
+            "512",
+            "--device",
+            "cpu",
+        )
     )
     y14 = parser.parse_args(
         (
@@ -74,6 +88,30 @@ def test_cli_has_three_separate_experiment_commands(tmp_path) -> None:
     assert y13.comet_project == DEFAULT_COMET_PROJECT
     assert y14.comet_project == DEFAULT_COMET_PROJECT
     assert y15.comet_project == DEFAULT_COMET_PROJECT
+    assert y13.output_directory == tmp_path / "y13_repeat"
+    assert y13.epochs == 1000
+    assert y13.batch_size == 512
+    assert y14.epochs is None
+    assert y15.batch_size is None
+
+
+def test_repeat_protocol_changes_only_epochs_and_batch_size() -> None:
+    protocols = (("Y13", 125), ("Y14", 125), ("Y15", 50))
+    for experiment_id, scheduler_step_size in protocols:
+        spec, epochs, batch_size = _resolve_training_protocol(
+            experiment_id,
+            1000,
+            512,
+        )
+        assert epochs == 1000
+        assert batch_size == 512
+        assert spec.scheduler_step_size == scheduler_step_size
+        assert _resolved_experiment_name(
+            f"{experiment_id}_base",
+            spec,
+            epochs,
+            batch_size,
+        ) == f"{experiment_id}_base_BS512_E1000"
 
 
 def test_formal_comet_config_targets_y_series_without_checkpoints() -> None:
