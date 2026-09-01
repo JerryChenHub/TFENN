@@ -70,7 +70,10 @@ not directly comparable to the single-pair 0.0018 result.
 
 ## Commands
 
-Set COMET_API_KEY for the exact formal Y13 path.
+Set COMET_API_KEY for all three formal runs. They default to the existing Y
+series project `tfenn_e311_gnn_y12_diagnostic_v2`. Each run records only train
+loss, validation loss, epoch duration, final test MAE, final test SAE, and the
+locked hyperparameters.
 
     python -m experiments.gnn.e311_y13_y15_pair_control_runner_v1 y13 \
       --study-root experiments/gnn/runs/e311_y13_y15_pair_controls_v1/Y13_exact_e311_400k \
@@ -87,9 +90,10 @@ Set COMET_API_KEY for the exact formal Y13 path.
       --output-directory experiments/gnn/runs/e311_y13_y15_pair_controls_v1/Y15_e311_odd_graph_5b100k \
       --device cuda
 
-Y13 delegates to the historical E-series prepare and run commands and asserts
-that preflight compiled E311 with exactly 14,926 parameters. Y14 uses the
-historical common trainer and best-validation checkpoint rule. Y15 also loads
+Y13 uses the historical E series preparation, config, enriched E311 spec,
+model builder, and common trainer directly. It asserts that preflight compiled
+E311 with exactly 14,926 parameters. Y14 uses the historical common trainer
+and best validation checkpoint rule. Y15 also loads
 the best-validation checkpoint before its one-time test evaluation. The Y15
 selected-model audit then checks global rotation/translation covariance,
 independent molecular D6 gauges, node permutation, OddPair identity, and zero
@@ -105,6 +109,6 @@ Y14 jointly changes the orientation population seen by RunningRMS and applies
 OddPair; its selected-model audit reports raw-forward MAE, raw-reverse MAE,
 OddPair MAE, and even leakage so these effects remain observable. Y14/Y15 are
 strictly pairwise graph controls, not multilevel or many-body GNNs. The core
-runner intentionally has no mid-run resume path; launch formal jobs in a
-reliable scheduler or add orchestration-level restart handling without
-changing the model mathematics.
+runner and strict Y series Comet route require fresh output paths. Preserve a
+failed attempt and retrain in a new path instead of weakening provenance
+checks or changing the model mathematics.

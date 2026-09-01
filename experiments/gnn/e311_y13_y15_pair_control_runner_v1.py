@@ -28,11 +28,19 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader, Subset, TensorDataset
 
 from experiments.benzene_pair import sweep30 as e_common
-from experiments.benzene_pair.comet_logging import NullCometTrialLogger
+from experiments.benzene_pair.comet_logging import (
+    LOSS_TIME_TEST_ERROR_PROFILE,
+    CometConfig,
+    NullCometTrialLogger,
+)
 from experiments.benzene_pair.data.benzene_cluster import (
     load_benzene_cluster_csv,
 )
 from experiments.benzene_pair.e_series import runner as e_runner
+from experiments.gnn.e311_gnn_y12_diagnostic_runner_v2 import (
+    YCometConfigV2,
+    create_y_comet_logger_v2,
+)
 from experiments.gnn.e311_y13_y15_pair_control_core_v1 import (
     E311OddGraphCoreV1,
     E311TwoNodeOddControlV1,
@@ -53,6 +61,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_ROOT = (
     REPOSITORY_ROOT / "experiments" / "gnn" / "runs" / "e311_y13_y15_pair_controls_v1"
 )
+DEFAULT_COMET_PROJECT = "tfenn_e311_gnn_y12_diagnostic_v2"
+COMET_SERIES_TAG = "e311_gnn_y13_y15_pair_controls_v1"
 Y15_LEARNING_RATE = 0.003
 Y15_WEIGHT_DECAY = 1.0e-4
 Y15_SCHEDULER_GAMMA = 0.5
@@ -60,6 +70,160 @@ Y15_TF32 = True
 Y15_RECONSTRUCTION_TOLERANCE = 1.0e-9
 Y15_OPLS_VERSION = "2.0.0"
 Y15_OPLS_COMMIT = "a5f874ed00152b156cd2525c961bd81030237e31"
+
+
+def _formal_comet_config(
+    project: str,
+    workspace: str | None,
+    experiment_id: str,
+) -> CometConfig:
+    resolved_project = project.strip()
+    if not resolved_project:
+        raise ValueError("formal Y13 to Y15 runs require a Comet project")
+    return CometConfig(
+        enabled=True,
+        required_online=True,
+        project_name=resolved_project,
+        workspace=workspace,
+        upload_checkpoints=False,
+        tags=("e311_gnn_y_series", COMET_SERIES_TAG, experiment_id),
+    )
+
+
+class _StrictYSeriesCometAdapter:
+    """Adapt the strict Y logger to the historical trainer interface."""
+
+    enabled = True
+
+    def __init__(self, logger: Any) -> None:
+        self._logger = logger
+        self._last_epoch = 0
+
+    @property
+    def identity(self) -> dict[str, Any]:
+        return dict(self._logger.identity)
+
+    def log_config(
+        self,
+        *,
+        study_config: Mapping[str, Any],
+        trial_config: Mapping[str, Any],
+        parameters: Mapping[str, Any],
+    ) -> None:
+        self._logger.log_parameters(
+            {
+                "study": dict(study_config),
+                "trial": dict(trial_config),
+                "parameters": dict(parameters),
+            }
+        )
+
+    def log_epoch(
+        self,
+        *,
+        epoch: int,
+        train_loss: float,
+        validation_loss: float,
+        learning_rate: float,
+        extra_metrics: Mapping[str, Any] | None = None,
+    ) -> None:
+        del learning_rate
+        if int(epoch) <= 0:
+            return
+        if extra_metrics is None or "epoch_duration_seconds" not in extra_metrics:
+            raise ValueError("strict Y Comet logging requires epoch duration")
+        self._last_epoch = int(epoch)
+        self._logger.log_evaluation(
+            global_step=self._last_epoch,
+            train_loss=train_loss,
+            validation_loss=validation_loss,
+            epoch_duration_seconds=float(extra_metrics["epoch_duration_seconds"]),
+        )
+
+    def log_final(
+        self,
+        *,
+        metrics: Mapping[str, Any],
+        relative_force_norm_stats: Mapping[str, Any],
+        summary: Mapping[str, Any] | None = None,
+    ) -> None:
+        del relative_force_norm_stats, summary
+        test_metrics = metrics.get("test")
+        if not isinstance(test_metrics, Mapping):
+            raise ValueError("strict Y Comet logging requires final test metrics")
+        self._logger.log_final(
+            global_step=self._last_epoch,
+            final_test_mae=float(test_metrics["mae"]),
+            final_test_sae=float(test_metrics["sae"]),
+        )
+
+    def log_asset(self, *values: Any, **options: Any) -> None:
+        del values, options
+
+    def log_checkpoint_reference(self, *values: Any, **options: Any) -> None:
+        del values, options
+
+    def log_error(self, *values: Any, **options: Any) -> None:
+        del values, options
+
+    def finish(self, status: str = "complete") -> None:
+        del status
+        self._logger.finish()
+
+
+def _create_strict_y_series_comet_logger(
+    *,
+    comet_path: Path,
+    model_id: str,
+    experiment_name: str,
+    project: str,
+    workspace: str | None,
+) -> _StrictYSeriesCometAdapter:
+    if comet_path.exists():
+        raise FileExistsError(
+            "formal Y13 to Y15 strict Comet runs require a fresh output path"
+        )
+    logger = create_y_comet_logger_v2(
+        YCometConfigV2(
+            project=project.strip(),
+            workspace=workspace,
+            tags=("e311_gnn_y_series", COMET_SERIES_TAG, model_id),
+            enabled=True,
+        ),
+        experiment_name=experiment_name,
+    )
+    adapted = _StrictYSeriesCometAdapter(logger)
+    identity = adapted.identity
+    experiment_key = str(identity.get("experiment_key", ""))
+    if not experiment_key:
+        raise RuntimeError("Comet did not provide an experiment key")
+    _write_json_atomic(
+        comet_path,
+        {
+            "schema_name": "tfenn_sweep31_comet_trial",
+            "schema_version": 1,
+            "model_id": model_id,
+            "experiment_name": experiment_name,
+            "project_name": project.strip(),
+            "metric_profile": LOSS_TIME_TEST_ERROR_PROFILE,
+            "experiment_key": experiment_key,
+            "identity": identity,
+            "last_logged_epoch": -1,
+            "updated_at_utc": _utc_now(),
+        },
+    )
+    return adapted
+
+
+def _update_strict_comet_epoch_record(comet_path: Path, epoch: int) -> None:
+    record = json.loads(comet_path.read_text(encoding="utf_8"))
+    if record.get("schema_name") != "tfenn_sweep31_comet_trial":
+        raise ValueError("unexpected strict Comet record schema")
+    if int(epoch) <= int(record.get("last_logged_epoch", -1)):
+        raise ValueError("strict Comet epoch record did not advance")
+    record["last_logged_epoch"] = int(epoch)
+    record["updated_at_utc"] = _utc_now()
+    _write_json_atomic(comet_path, record)
 
 
 def _utc_now() -> str:
@@ -78,6 +242,7 @@ def _source_sha256() -> str:
     paths = (
         Path(__file__).resolve(),
         Path(__file__).with_name("e311_y13_y15_pair_control_core_v1.py"),
+        Path(__file__).with_name("e311_gnn_y12_diagnostic_runner_v2.py"),
         REPOSITORY_ROOT / "experiments" / "benzene_pair" / "e_series" / "catalog.py",
         REPOSITORY_ROOT
         / "experiments"
@@ -184,7 +349,12 @@ def _assert_y13_preflight(study_root: Path) -> Mapping[str, Any]:
     return preflight
 
 
-def run_y13_exact_reproduction_v1(study_root: Path, device: str) -> Path:
+def run_y13_exact_reproduction_v1(
+    study_root: Path,
+    device: str,
+    comet_project: str = DEFAULT_COMET_PROJECT,
+    comet_workspace: str | None = None,
+) -> Path:
     """Run the exact historical non-GNN E311 path without reimplementation."""
 
     assert_historical_e311_definition_v1()
@@ -202,40 +372,85 @@ def run_y13_exact_reproduction_v1(study_root: Path, device: str) -> Path:
         )
     if not os.environ.get("COMET_API_KEY", "").strip():
         raise RuntimeError("formal exact Y13 requires COMET_API_KEY")
-    e_runner.main(("prepare", "--study_root", str(study_root)))
+    prepare_status = e_runner.main(("prepare", "--study_root", str(study_root)))
+    if prepare_status != 0:
+        raise RuntimeError("Y13 E-series preparation failed")
     preflight = _assert_y13_preflight(study_root)
+    spec = e_runner._enriched_spec(
+        e_runner.get_model_spec(HISTORICAL_E311_MODEL_ID),
+        preflight,
+    )
+    config = e_runner.make_config(3, study_root=study_root)
+    config = replace(
+        config,
+        comet=_formal_comet_config(
+            comet_project,
+            comet_workspace,
+            "Y13",
+        ),
+    )
+    split_directory = e_runner._shared_split_directory(study_root)
+    split, split_manifest = e_common._load_split(split_directory)
+    paths = e_common.TrialPaths.create(
+        config.study_directory / "models" / HISTORICAL_E311_MODEL_ID
+    )
     alias = {
         "schema_name": "tfenn_y13_exact_e311_alias",
         "schema_version": 1,
         "experiment": get_y_pair_control_spec_v1("Y13").as_dict(),
-        "delegated_module": "experiments.benzene_pair.e_series.runner",
+        "delegated_module": "experiments.benzene_pair.sweep30.run_trial",
         "delegated_command": {
             "experiment": 3,
             "model": HISTORICAL_E311_MODEL_ID,
             "device": device,
         },
+        "comet_project": config.comet.project_name,
         "preflight_hash": preflight["preflight_hash"],
         "source_sha256": _source_sha256(),
         "git_commit": _git_commit(),
         "created_at_utc": _utc_now(),
     }
     _write_json_atomic(study_root / "y13_exact_e311_alias.json", alias)
-    e_runner.main(
-        (
-            "run",
-            "--experiment",
-            "3",
-            "--study_root",
-            str(study_root),
-            "--model",
-            HISTORICAL_E311_MODEL_ID,
-            "--device",
-            device,
+    logger: Any = NullCometTrialLogger()
+    try:
+        logger = _create_strict_y_series_comet_logger(
+            comet_path=paths.comet,
+            model_id=HISTORICAL_E311_MODEL_ID,
+            experiment_name="Y13_E311_Exact_400K",
+            project=config.comet.project_name,
+            workspace=config.comet.workspace,
         )
-    )
-    if not completed.is_file():
+        e_common.run_trial(
+            config,
+            spec,
+            paths,
+            split,
+            split_manifest,
+            logger,
+            device=str(_resolve_device(device)),
+            epochs=config.epochs,
+            model_builder=e_runner._build_model,
+            source_sha256=e_runner._source_sha256(),
+            study_metadata={
+                **e_runner._study_metadata(preflight),
+                "series": "Y13_Y15_pair_controls_v1",
+                "experiment_id": "Y13",
+                "comet_project": config.comet.project_name,
+            },
+        )
+    except KeyboardInterrupt:
+        logger.finish("interrupted")
+        raise
+    except BaseException as error:
+        e_common._record_error(paths, spec, error)
+        try:
+            logger.log_error(error, stage="Y13")
+        finally:
+            logger.finish("error")
+        raise
+    if not paths.summary.is_file():
         raise RuntimeError("the delegated E311 run did not produce a summary")
-    return completed
+    return paths.summary
 
 
 def _build_y14_model(_spec: object, device: str) -> E311TwoNodeOddControlV1:
@@ -324,6 +539,8 @@ def run_y14_odd_graph_400k_v1(
     e_study_root: Path,
     output_directory: Path,
     device: str,
+    comet_project: str = DEFAULT_COMET_PROJECT,
+    comet_workspace: str | None = None,
 ) -> Path:
     """Run Y14 on the exact Y13 data and split using the common E runner."""
 
@@ -356,30 +573,58 @@ def run_y14_odd_graph_400k_v1(
     paths = e_common.TrialPaths.create(output_directory)
     if paths.summary.exists():
         raise FileExistsError(paths.summary)
-    config = replace(config, study_directory=output_directory.parent)
-    e_common.run_trial(
+    config = replace(
         config,
-        spec,
-        paths,
-        split,
-        split_manifest,
-        NullCometTrialLogger(),
-        device=str(_resolve_device(device)),
-        epochs=spec.epochs,
-        model_builder=_build_y14_model,
-        selected_model_audit_hook=_y14_selected_audit,
-        source_sha256=_source_sha256(),
-        study_metadata={
-            "series": "Y13_Y15_pair_controls_v1",
-            "experiment_id": "Y14",
-            "shared_split_source": str(split_directory),
-            "shared_split_manifest_hash": split_manifest["manifest_hash"],
-            "only_trainable_module": "historical_E311",
-            "running_rms_population": "both_endpoint_orientations",
-            "train_labeled_pair_exposures": 160_000_000,
-            "train_ordered_kernel_evaluations": 320_000_000,
-        },
+        study_directory=output_directory.parent,
+        comet=_formal_comet_config(
+            comet_project,
+            comet_workspace,
+            "Y14",
+        ),
     )
+    logger: Any = NullCometTrialLogger()
+    try:
+        logger = _create_strict_y_series_comet_logger(
+            comet_path=paths.comet,
+            model_id="Y14",
+            experiment_name="Y14_E311_OddGraph_400K",
+            project=config.comet.project_name,
+            workspace=config.comet.workspace,
+        )
+        e_common.run_trial(
+            config,
+            spec,
+            paths,
+            split,
+            split_manifest,
+            logger,
+            device=str(_resolve_device(device)),
+            epochs=spec.epochs,
+            model_builder=_build_y14_model,
+            selected_model_audit_hook=_y14_selected_audit,
+            source_sha256=_source_sha256(),
+            study_metadata={
+                "series": "Y13_Y15_pair_controls_v1",
+                "experiment_id": "Y14",
+                "comet_project": config.comet.project_name,
+                "shared_split_source": str(split_directory),
+                "shared_split_manifest_hash": split_manifest["manifest_hash"],
+                "only_trainable_module": "historical_E311",
+                "running_rms_population": "both_endpoint_orientations",
+                "train_labeled_pair_exposures": 160_000_000,
+                "train_ordered_kernel_evaluations": 320_000_000,
+            },
+        )
+    except KeyboardInterrupt:
+        logger.finish("interrupted")
+        raise
+    except BaseException as error:
+        e_common._record_error(paths, spec, error)
+        try:
+            logger.log_error(error, stage="Y14")
+        finally:
+            logger.finish("error")
+        raise
     if not paths.summary.is_file():
         raise RuntimeError("Y14 did not produce a summary")
     return paths.summary
@@ -822,6 +1067,7 @@ def _selected_y15_metrics(
     return {
         "pair_force": {
             "mae": totals["pair_abs"] / pair_components,
+            "sae": totals["pair_abs"],
             "rmse": math.sqrt(totals["pair_square"] / pair_components),
             "normalized_mse": (
                 totals["pair_square"]
@@ -1023,11 +1269,12 @@ def _selected_y15_symmetry_audit_v1(
         model.train(was_training)
 
 
-def run_y15_odd_graph_5b100k_v1(
+def _run_y15_odd_graph_5b100k_v1(
     csv_path: Path,
     pair_npz_path: Path,
     output_directory: Path,
     device_value: str,
+    comet_logger: Any,
 ) -> Path:
     """Train the shared E311 OddGraph on 100k five-benzene configurations."""
 
@@ -1108,6 +1355,35 @@ def run_y15_odd_graph_5b100k_v1(
     )
     if _parameter_count(model) != HISTORICAL_E311_PARAMETER_COUNT:
         raise RuntimeError("Y15 parameter count changed")
+    comet_logger.log_config(
+        study_config={
+            "study_name": output_directory.parent.name,
+            "series": "Y13_Y15_pair_controls_v1",
+            "experiment_id": "Y15",
+            "data": dict(arrays.records),
+            "source_sha256": source_sha,
+        },
+        trial_config={
+            "experiment": spec.as_dict(),
+            "output_directory": str(output_directory),
+        },
+        parameters={
+            "compiled_parameter_count": _parameter_count(model),
+            "optimizer": "AdamW",
+            "learning_rate": Y15_LEARNING_RATE,
+            "weight_decay": Y15_WEIGHT_DECAY,
+            "scheduler": "StepLR",
+            "scheduler_step_size": spec.scheduler_step_size,
+            "scheduler_gamma": Y15_SCHEDULER_GAMMA,
+            "epochs": spec.epochs,
+            "graph_batch_size": spec.graph_batch_size,
+            "split_seed": HISTORICAL_SPLIT_SEED,
+            "model_seed": HISTORICAL_MODEL_SEED,
+            "shuffle_seed": HISTORICAL_SHUFFLE_SEED,
+            "dtype": "float32",
+            "enable_tf32_during_training": Y15_TF32,
+        },
+    )
     pair_index = torch.from_numpy(arrays.pair_index).to(device)
     model.reset_normalization_stats()
     model.train()
@@ -1215,12 +1491,13 @@ def run_y15_odd_graph_5b100k_v1(
                 target_scale=target_scale,
                 source_sha256=source_sha,
             )
+        epoch_duration = time.perf_counter() - started
         row = {
             "epoch": epoch,
             "learning_rate": learning_rate,
             "train_normalized_mse": train_loss,
             "validation_normalized_mse": validation_loss,
-            "epoch_duration_seconds": time.perf_counter() - started,
+            "epoch_duration_seconds": epoch_duration,
         }
         history.append(row)
         _write_history_atomic(history_path, history)
@@ -1235,6 +1512,14 @@ def run_y15_odd_graph_5b100k_v1(
                 "best_validation_normalized_mse": best_validation,
             },
         )
+        comet_logger.log_epoch(
+            epoch=epoch,
+            train_loss=train_loss,
+            validation_loss=validation_loss,
+            learning_rate=learning_rate,
+            extra_metrics={"epoch_duration_seconds": epoch_duration},
+        )
+        _update_strict_comet_epoch_record(output_directory / "comet.json", epoch)
         print(json.dumps({"experiment_id": "Y15", **row}), flush=True)
 
     selected = _restore_y15_checkpoint(
@@ -1314,6 +1599,7 @@ def run_y15_odd_graph_5b100k_v1(
         "data": dict(arrays.records),
         "source_sha256": source_sha,
         "git_commit": _git_commit(),
+        "comet": comet_logger.identity,
         "artifacts": {
             "history": str(history_path),
             "history_sha256": _sha256(history_path),
@@ -1324,6 +1610,17 @@ def run_y15_odd_graph_5b100k_v1(
         },
         "completed_at_utc": _utc_now(),
     }
+    comet_logger.log_final(
+        metrics={
+            "test": {
+                "mae": selected_metrics["pair_force"]["mae"],
+                "sae": selected_metrics["pair_force"]["sae"],
+            }
+        },
+        relative_force_norm_stats={},
+        summary=summary,
+    )
+    comet_logger.finish("complete")
     _write_json_atomic(summary_path, summary)
     _write_json_atomic(
         status_path,
@@ -1337,6 +1634,82 @@ def run_y15_odd_graph_5b100k_v1(
         },
     )
     return summary_path
+
+
+def run_y15_odd_graph_5b100k_v1(
+    csv_path: Path,
+    pair_npz_path: Path,
+    output_directory: Path,
+    device_value: str,
+    comet_project: str = DEFAULT_COMET_PROJECT,
+    comet_workspace: str | None = None,
+) -> Path:
+    """Run formal Y15 with the strict Y-series Comet metric contract."""
+
+    output_directory = output_directory.resolve()
+    summary_path = output_directory / "summary.json"
+    status_path = output_directory / "status.json"
+    if summary_path.exists():
+        raise FileExistsError(summary_path)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    logger: Any = NullCometTrialLogger()
+    try:
+        logger = _create_strict_y_series_comet_logger(
+            comet_path=output_directory / "comet.json",
+            model_id="Y15",
+            experiment_name="Y15_E311_OddGraph_5B100K",
+            project=_formal_comet_config(
+                comet_project,
+                comet_workspace,
+                "Y15",
+            ).project_name,
+            workspace=comet_workspace,
+        )
+        return _run_y15_odd_graph_5b100k_v1(
+            csv_path,
+            pair_npz_path,
+            output_directory,
+            device_value,
+            logger,
+        )
+    except KeyboardInterrupt:
+        current = (
+            json.loads(status_path.read_text(encoding="utf_8"))
+            if status_path.is_file()
+            else {}
+        )
+        _write_json_atomic(
+            status_path,
+            {
+                **current,
+                "status": "interrupted",
+                "experiment_id": "Y15",
+                "updated_at_utc": _utc_now(),
+            },
+        )
+        logger.finish("interrupted")
+        raise
+    except BaseException as error:
+        current = (
+            json.loads(status_path.read_text(encoding="utf_8"))
+            if status_path.is_file()
+            else {}
+        )
+        _write_json_atomic(
+            status_path,
+            {
+                **current,
+                "status": "error",
+                "experiment_id": "Y15",
+                "exception_type": type(error).__name__,
+                "updated_at_utc": _utc_now(),
+            },
+        )
+        try:
+            logger.log_error(error, stage="Y15")
+        finally:
+            logger.finish("error")
+        raise
 
 
 def build_argument_parser_v1() -> argparse.ArgumentParser:
@@ -1369,6 +1742,9 @@ def build_argument_parser_v1() -> argparse.ArgumentParser:
         default=DEFAULT_OUTPUT_ROOT / "Y15_e311_odd_graph_5b100k",
     )
     y15.add_argument("--device", default="cuda")
+    for command in (y13, y14, y15):
+        command.add_argument("--comet-project", default=DEFAULT_COMET_PROJECT)
+        command.add_argument("--comet-workspace")
     return parser
 
 
@@ -1378,12 +1754,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = run_y13_exact_reproduction_v1(
             arguments.study_root,
             arguments.device,
+            arguments.comet_project,
+            arguments.comet_workspace,
         )
     elif arguments.command == "y14":
         result = run_y14_odd_graph_400k_v1(
             arguments.e_study_root,
             arguments.output_directory,
             arguments.device,
+            arguments.comet_project,
+            arguments.comet_workspace,
         )
     else:
         result = run_y15_odd_graph_5b100k_v1(
@@ -1391,6 +1771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.pair_npz,
             arguments.output_directory,
             arguments.device,
+            arguments.comet_project,
+            arguments.comet_workspace,
         )
     print(json.dumps({"status": "complete", "result": str(result)}))
     return 0
@@ -1401,6 +1783,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "DEFAULT_COMET_PROJECT",
     "SplitIndicesV1",
     "Y15ArraysV1",
     "build_argument_parser_v1",
