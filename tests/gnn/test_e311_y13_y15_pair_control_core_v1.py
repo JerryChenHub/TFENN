@@ -168,6 +168,7 @@ def test_two_node_output_is_world_odd_pair_and_signed_scatter(
 
 def test_two_node_historical_runner_adapter_returns_one_pair_vector() -> None:
     model = build_y14_two_node_control_v1(dtype=torch.float64, device="cpu")
+    assert model._pair_index.device == next(model.parameters()).device
     model.eval()
     centers, frames = _geometry(2)
     prediction = model(centers, frames)
@@ -177,6 +178,17 @@ def test_two_node_historical_runner_adapter_returns_one_pair_vector() -> None:
     assert model.trainable_parameter_count == HISTORICAL_E311_PARAMETER_COUNT
     symmetry = symmetry_metrics(model, centers, frames, tolerance=1.0e-9)
     assert symmetry["passed"]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_two_node_historical_runner_adapter_places_pair_index_on_cuda() -> None:
+    model = build_y14_two_node_control_v1(dtype=torch.float32, device="cuda")
+    assert model._pair_index.device.type == "cuda"
+    assert model._pair_index.device == next(model.parameters()).device
+    centers, frames = _geometry(2)
+    prediction = model(centers.cuda(), frames.float().cuda())
+    assert prediction.shape == (1, 3)
+    assert bool(torch.isfinite(prediction).all())
 
 
 def test_five_node_complete_graph_is_permutation_equivariant_and_conservative(

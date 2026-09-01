@@ -583,13 +583,14 @@ def build_y14_two_node_control_v1(
     device: torch.device | str = "cpu",
     seed: int = HISTORICAL_MODEL_SEED,
 ) -> E311TwoNodeOddControlV1:
-    return E311TwoNodeOddControlV1(
+    model = E311TwoNodeOddControlV1(
         build_e311_odd_graph_core_v1(
             dtype=dtype,
             device=device,
             seed=seed,
         )
     )
+    return model.to(device=torch.device(device), dtype=dtype)
 
 
 __all__ = [
