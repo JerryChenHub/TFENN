@@ -186,7 +186,7 @@ def test_two_node_historical_runner_adapter_places_pair_index_on_cuda() -> None:
     assert model._pair_index.device.type == "cuda"
     assert model._pair_index.device == next(model.parameters()).device
     centers, frames = _geometry(2)
-    prediction = model(centers.cuda(), frames.float().cuda())
+    prediction = model(centers.float().cuda(), frames.float().cuda())
     assert prediction.shape == (1, 3)
     assert bool(torch.isfinite(prediction).all())
 
