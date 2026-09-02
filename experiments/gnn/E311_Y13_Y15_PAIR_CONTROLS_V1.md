@@ -113,3 +113,13 @@ strictly pairwise graph controls, not multilevel or many-body GNNs. The core
 runner and strict Y series Comet route require fresh output paths. Preserve a
 failed attempt and retrain in a new path instead of weakening provenance
 checks or changing the model mathematics.
+
+## Archived incorrect Y15 loss
+
+The previous Y15 implementation at commit `f3638e8` supervised and selected
+the model using pair force labels. That loss definition is invalid for the
+five molecule force objective. The exact old source remains in Git commit
+`f3638e83d7de68b3c5e8f5680717a1ca5d37c99b`. Retrieval instructions and the
+impact note are retained at
+`experiments/gnn/archive/y15_pair_loss_legacy_f3638e8/`. The old code is
+provenance only and must not be used to resume the corrected node force run.
