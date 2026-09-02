@@ -114,6 +114,7 @@ def test_wrapper_has_exactly_one_e311_and_no_multibody_message_block(
     module_names = tuple(type(module).__name__ for module in graph_core.modules())
     assert not any("MultibodyMessageBlock" in name for name in module_names)
     metadata = dict(graph_core.architecture_metadata)
+    assert metadata["forward_output"] == "normalized_node_force_world"
     assert metadata["uses_receiver_local_multibody_message_block"] is False
     assert metadata["has_hidden_node_state"] is False
 
@@ -174,6 +175,10 @@ def test_two_node_historical_runner_adapter_returns_one_pair_vector() -> None:
     prediction = model(centers, frames)
     expected = model.core_output(centers, frames).normalized_pair_force_world[..., 0, :]
     assert prediction.shape == (1, 3)
+    assert (
+        model.architecture_metadata["forward_output"]
+        == "normalized_pair_force_world_endpoint_zero"
+    )
     torch.testing.assert_close(prediction, expected, rtol=0.0, atol=0.0)
     assert model.trainable_parameter_count == HISTORICAL_E311_PARAMETER_COUNT
     symmetry = symmetry_metrics(model, centers, frames, tolerance=1.0e-9)
@@ -200,6 +205,10 @@ def test_five_node_complete_graph_is_permutation_equivariant_and_conservative(
     output = graph_core.core_output(centers, frames, pair_index)
     assert output.normalized_pair_force_world.shape == (1, 10, 3)
     assert output.normalized_node_force_world.shape == (1, 5, 3)
+    torch.testing.assert_close(
+        graph_core(centers, frames, pair_index),
+        output.normalized_node_force_world,
+    )
     torch.testing.assert_close(
         output.normalized_node_force_world.sum(dim=-2),
         torch.zeros((1, 3), dtype=torch.float64),
@@ -264,7 +273,6 @@ def test_selected_y15_symmetry_audit_covers_the_graph_contract(
         TensorDataset(
             centers,
             frames,
-            torch.zeros((1, 10, 3), dtype=torch.float64),
             torch.zeros((1, 5, 3), dtype=torch.float64),
         ),
         batch_size=1,
@@ -282,7 +290,6 @@ def test_selected_y15_symmetry_audit_covers_the_graph_contract(
         "global_se3_node_force",
         "independent_d6_gauge_node_force",
         "node_permutation",
-        "oddpair_definition",
         "zero_total_force",
     }
 
@@ -303,7 +310,7 @@ def test_signed_scatter_and_shared_kernel_backward_are_finite(
     centers, frames = _geometry(5)
     graph_core.zero_grad(set_to_none=True)
     output = graph_core.core_output(centers, frames, pair_index)
-    output.normalized_pair_force_world.square().mean().backward()
+    output.normalized_node_force_world.square().mean().backward()
     gradients = [
         parameter.grad
         for parameter in graph_core.parameters()

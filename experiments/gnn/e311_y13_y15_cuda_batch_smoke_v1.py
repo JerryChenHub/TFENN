@@ -84,10 +84,14 @@ def run_smoke(experiment_id: str, hold_seconds: float) -> dict[str, object]:
             device=device,
             seed=HISTORICAL_MODEL_SEED,
         )
-        centers, frames = _inputs(1_000, 5, device)
+        centers, frames = _inputs(512, 5, device)
         pair_index = complete_pair_index_v1(5).to(device)
-        target = torch.randn((1_000, 10, 3), dtype=torch.float32, device=device)
-        prediction = model(centers, frames, pair_index)
+        target = torch.randn((512, 5, 3), dtype=torch.float32, device=device)
+        prediction = model.core_output(
+            centers,
+            frames,
+            pair_index,
+        ).normalized_node_force_world
     else:
         raise ValueError(experiment_id)
 

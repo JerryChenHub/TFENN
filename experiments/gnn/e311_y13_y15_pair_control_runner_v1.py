@@ -1,9 +1,9 @@
-"""Core runners for the Y13--Y15 exact-E311 pair controls.
+"""Core runners for the Y13 through Y15 E311 controls.
 
-Y13 delegates to the unchanged E-series runner. Y14 reuses the E-series data,
+Y13 delegates to the unchanged E series runner. Y14 reuses the E series data,
 split, optimizer, scheduler, normalization, checkpoint selection, and metrics,
-changing only the model to the parameter-free OddGraph wrapper. Y15 uses the
-same optimizer budget per unordered edge on configurable five-benzene data.
+changing only the model to the parameter free OddGraph wrapper. Y15 trains that
+graph model using only five molecule force supervision.
 """
 
 from __future__ import annotations
@@ -67,7 +67,6 @@ Y15_LEARNING_RATE = 0.003
 Y15_WEIGHT_DECAY = 1.0e-4
 Y15_SCHEDULER_GAMMA = 0.5
 Y15_TF32 = True
-Y15_RECONSTRUCTION_TOLERANCE = 1.0e-9
 Y15_OPLS_VERSION = "2.0.0"
 Y15_OPLS_COMMIT = "a5f874ed00152b156cd2525c961bd81030237e31"
 
@@ -724,10 +723,9 @@ def run_y14_odd_graph_400k_v1(
 
 
 @dataclass(frozen=True, slots=True)
-class Y15ArraysV1:
+class Y15NodeArraysV2:
     centers_world: np.ndarray
     frames_body_to_world: np.ndarray
-    pair_force_world: np.ndarray
     node_force_world: np.ndarray
     pair_index: np.ndarray
     group_id: np.ndarray
@@ -790,40 +788,20 @@ def _deterministic_group_split(
     return result
 
 
-def _numpy_signed_scatter(
-    pair_force: np.ndarray,
-    pair_index: np.ndarray,
-    node_count: int,
-) -> np.ndarray:
-    result = np.zeros(
-        (pair_force.shape[0], node_count, 3),
-        dtype=pair_force.dtype,
-    )
-    for edge, (first, second) in enumerate(pair_index.T):
-        result[:, first] += pair_force[:, edge]
-        result[:, second] -= pair_force[:, edge]
-    return result
-
-
-def load_y15_arrays_v1(
+def load_y15_node_arrays_v2(
     csv_path: Path,
-    pair_npz_path: Path,
     *,
     expected_sample_count: int = 100_000,
-) -> Y15ArraysV1:
-    """Load and strictly validate five-benzene pair supervision."""
+) -> Y15NodeArraysV2:
+    """Load five molecule geometries and molecular force labels."""
 
     csv_path = csv_path.resolve()
-    pair_npz_path = pair_npz_path.resolve()
     csv_metadata_path = csv_path.with_suffix(".json")
     csv_validation_path = csv_path.with_suffix(".validation.json")
-    pair_metadata_path = pair_npz_path.with_suffix(".json")
     for path in (
         csv_path,
         csv_metadata_path,
         csv_validation_path,
-        pair_npz_path,
-        pair_metadata_path,
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -867,123 +845,22 @@ def load_y15_arrays_v1(
     arrays = load_benzene_cluster_csv(csv_path)
     if arrays.molecule_count != 5 or len(arrays) != expected_sample_count:
         raise ValueError("Y15 requires exactly 100k five-benzene configurations")
-
-    pair_sha = _sha256(pair_npz_path)
-    pair_metadata = json.loads(pair_metadata_path.read_text(encoding="utf_8"))
-    expected_pair_index = complete_pair_index_v1(5).T.cpu().numpy()
-    expected_pair_list = expected_pair_index.tolist()
-    pair_generator = (
-        REPOSITORY_ROOT
-        / "experiments"
-        / "gnn"
-        / "data"
-        / "derive_pair_forces.py"
-    )
-    pair_contract = pair_metadata.get("pair_contract", {})
-    pair_validation = pair_metadata.get("validation", {})
-    pair_arrays = pair_metadata.get("arrays", {})
-    try:
-        reverse_residual = float(
-            pair_validation.get("maximum_reverse_component_residual", math.nan)
-        )
-        reaggregation_residual = float(
-            pair_validation.get(
-                "maximum_reaggregation_component_residual",
-                math.nan,
-            )
-        )
-    except (TypeError, ValueError):
-        reverse_residual = math.nan
-        reaggregation_residual = math.nan
-    if (
-        pair_metadata.get("schema_name")
-        != "tfenn_five_benzene_pair_force_supervision"
-        or pair_metadata.get("schema_version") != 1
-        or pair_metadata.get("source", {}).get("csv_sha256") != csv_sha
-        or pair_metadata.get("source", {}).get("sample_count")
-        != expected_sample_count
-        or pair_metadata.get("source", {}).get("molecule_count") != 5
-        or pair_metadata.get("opls_runtime", {}).get("runtime_version")
-        != Y15_OPLS_VERSION
-        or pair_metadata.get("opls_runtime", {}).get("source_commit")
-        != Y15_OPLS_COMMIT
-        or pair_contract.get("pair_count") != 10
-        or pair_contract.get("pair_index") != expected_pair_list
-        or pair_contract.get("orientation")
-        != "first index receives force from second index"
-        or pair_contract.get("reverse_force") != "negative of stored force"
-        or pair_contract.get("aggregation")
-        != (
-            "add stored force to first index and subtract it from second index"
-        )
-        or pair_arrays.get("sample_id")
-        != {"shape": [expected_sample_count], "dtype": "int64"}
-        or pair_arrays.get("pair_index")
-        != {"shape": [10, 2], "dtype": "int64"}
-        or pair_arrays.get("pair_force_kcal_mol_A")
-        != {
-            "shape": [expected_sample_count, 10, 3],
-            "dtype": "float64",
-            "unit": "kcal_per_mol_per_angstrom",
-        }
-        or pair_validation.get("passed") is not True
-        or not math.isfinite(reverse_residual)
-        or reverse_residual < 0.0
-        or reverse_residual > Y15_RECONSTRUCTION_TOLERANCE
-        or not math.isfinite(reaggregation_residual)
-        or reaggregation_residual < 0.0
-        or reaggregation_residual > Y15_RECONSTRUCTION_TOLERANCE
-        or pair_metadata.get("artifacts", {}).get("npz_sha256") != pair_sha
-        or pair_metadata.get("artifacts", {}).get("generator_sha256")
-        != _sha256(pair_generator)
-    ):
-        raise ValueError("pair-force provenance or contract mismatch")
-    with np.load(pair_npz_path, allow_pickle=False) as archive:
-        sample_id = np.asarray(archive["sample_id"])
-        stored_pair_index = np.asarray(archive["pair_index"])
-        pair_force = np.asarray(archive["pair_force_kcal_mol_A"])
-        group_id = np.asarray(
-            archive["group_id"] if "group_id" in archive.files else sample_id
-        )
-    if (
-        sample_id.dtype != np.dtype(np.int64)
-        or stored_pair_index.dtype != np.dtype(np.int64)
-        or group_id.dtype != np.dtype(np.int64)
-        or pair_force.dtype != np.dtype(np.float64)
-    ):
-        raise ValueError("Y15 NPZ array dtypes do not match the locked contract")
-    if not np.array_equal(stored_pair_index, expected_pair_index):
-        raise ValueError("Y15 pair_index must be the canonical ten-edge complete graph")
-    if not np.array_equal(sample_id, np.arange(expected_sample_count)):
-        raise ValueError("pair-force sample IDs are not canonical")
-    if pair_force.shape != (expected_sample_count, 10, 3):
-        raise ValueError("pair-force array must have shape (100000, 10, 3)")
-    if group_id.shape != (expected_sample_count,):
-        raise ValueError("group_id must have one entry per configuration")
-    if not np.array_equal(group_id, sample_id):
-        raise ValueError(
-            "formal Y15 requires independent configurations "
-            "with group_id equal to sample_id"
-        )
-    if not np.isfinite(pair_force).all():
-        raise ValueError("pair-force labels contain nonfinite values")
-
-    pair_index = stored_pair_index.T.copy()
-    reconstructed = _numpy_signed_scatter(pair_force, pair_index, 5)
     node_force = np.asarray(arrays.forces, dtype=np.float64)
-    reconstruction_residual = float(np.max(np.abs(reconstructed - node_force)))
-    if reconstruction_residual > Y15_RECONSTRUCTION_TOLERANCE:
-        raise ValueError(
-            "pair-force labels do not reconstruct five-benzene node forces: "
-            f"{reconstruction_residual}"
-        )
-    return Y15ArraysV1(
+    if node_force.shape != (expected_sample_count, 5, 3):
+        raise ValueError("Y15 molecular force array has an unexpected shape")
+    if not np.isfinite(node_force).all():
+        raise ValueError("Y15 molecular force labels contain nonfinite values")
+    group_id = np.arange(expected_sample_count, dtype=np.int64)
+    pair_index = complete_pair_index_v1(5).cpu().numpy()
+    maximum_net_force_component = float(
+        np.max(np.abs(node_force.sum(axis=1)))
+    )
+    return Y15NodeArraysV2(
         centers_world=np.ascontiguousarray(arrays.centers, dtype=np.float32),
         frames_body_to_world=np.ascontiguousarray(
             arrays.rotations,
             dtype=np.float32,
         ),
-        pair_force_world=np.ascontiguousarray(pair_force, dtype=np.float32),
         node_force_world=np.ascontiguousarray(node_force, dtype=np.float32),
         pair_index=np.ascontiguousarray(pair_index, dtype=np.int64),
         group_id=np.ascontiguousarray(group_id, dtype=np.int64),
@@ -992,13 +869,10 @@ def load_y15_arrays_v1(
             "csv_sha256": csv_sha,
             "csv_metadata_sha256": _sha256(csv_metadata_path),
             "csv_validation_sha256": _sha256(csv_validation_path),
-            "pair_npz_path": str(pair_npz_path),
-            "pair_npz_sha256": pair_sha,
-            "pair_metadata_sha256": _sha256(pair_metadata_path),
             "sample_count": expected_sample_count,
             "molecule_count": 5,
-            "pair_count": 10,
-            "pair_to_node_maximum_component_residual": reconstruction_residual,
+            "supervision_target": "five_molecule_force_world",
+            "maximum_target_net_force_component": maximum_net_force_component,
             "group_source": "one_independent_group_per_configuration",
         },
     )
@@ -1029,14 +903,14 @@ def _make_loader(
 def _move_batch(
     batch: Sequence[Tensor],
     device: torch.device,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, ...]:
     return tuple(
         item.to(device=device, non_blocking=device.type == "cuda")
         for item in batch
-    )  # type: ignore[return-value]
+    )
 
 
-def _evaluate_y15_loss(
+def _evaluate_y15_node_force_loss_v2(
     model: E311OddGraphCoreV1,
     loader: DataLoader[Any],
     pair_index: Tensor,
@@ -1048,16 +922,16 @@ def _evaluate_y15_loss(
     component_count = 0
     with torch.no_grad():
         for batch in loader:
-            centers, frames, pair_target, _node_target = _move_batch(batch, device)
-            prediction = model(centers, frames, pair_index)
-            difference = prediction - pair_target
+            centers, frames, node_target = _move_batch(batch, device)
+            output = model.core_output(centers, frames, pair_index)
+            difference = output.normalized_node_force_world - node_target
             squared_sum += float(difference.square().sum().cpu())
             component_count += difference.numel()
     model.train(was_training)
     return squared_sum / component_count
 
 
-def _save_y15_checkpoint(
+def _save_y15_node_force_checkpoint_v2(
     path: Path,
     model: E311OddGraphCoreV1,
     *,
@@ -1069,11 +943,11 @@ def _save_y15_checkpoint(
     e_common._atomic_torch_save(
         path,
         {
-            "schema_name": "tfenn_y15_selected_checkpoint",
-            "schema_version": 1,
+            "schema_name": "tfenn_y15_node_force_selected_checkpoint",
+            "schema_version": 2,
             "epoch": epoch,
-            "validation_normalized_mse": validation_loss,
-            "target_scale": target_scale,
+            "validation_normalized_node_force_mse": validation_loss,
+            "node_force_target_scale_component_rms": target_scale,
             "source_sha256": source_sha256,
             "parameter_state_dict": e_common._parameter_state(model),
             "normalization_state_dict": e_common._normalization_state(model),
@@ -1082,13 +956,19 @@ def _save_y15_checkpoint(
     )
 
 
-def _restore_y15_checkpoint(
+def _restore_y15_node_force_checkpoint_v2(
     path: Path,
     model: E311OddGraphCoreV1,
     *,
     source_sha256: str,
 ) -> Mapping[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=True)
+    if (
+        payload.get("schema_name")
+        != "tfenn_y15_node_force_selected_checkpoint"
+        or payload.get("schema_version") != 2
+    ):
+        raise RuntimeError("Y15 checkpoint does not use node force supervision")
     if payload.get("source_sha256") != source_sha256:
         raise RuntimeError("Y15 checkpoint source hash changed")
     e_common._restore_model_state(
@@ -1100,7 +980,7 @@ def _restore_y15_checkpoint(
     return payload
 
 
-def _selected_y15_metrics(
+def _selected_y15_node_force_metrics_v2(
     model: E311OddGraphCoreV1,
     loader: DataLoader[Any],
     pair_index: Tensor,
@@ -1108,48 +988,22 @@ def _selected_y15_metrics(
     target_scale: float,
 ) -> dict[str, Any]:
     totals = {
-        "pair_abs": 0.0,
-        "pair_square": 0.0,
         "node_abs": 0.0,
         "node_square": 0.0,
-        "raw_forward_abs": 0.0,
-        "raw_reverse_abs": 0.0,
-        "even_abs": 0.0,
-        "even_square": 0.0,
     }
-    pair_components = 0
     node_components = 0
     max_net_force = 0.0
     was_training = model.training
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            centers, frames, pair_target_normalized, node_target = _move_batch(
-                batch,
-                device,
-            )
+            centers, frames, node_target_normalized = _move_batch(batch, device)
             output = model.core_output(centers, frames, pair_index)
-            pair_prediction = output.normalized_pair_force_world * target_scale
-            pair_target = pair_target_normalized * target_scale
             node_prediction = output.normalized_node_force_world * target_scale
-            pair_difference = pair_prediction - pair_target
+            node_target = node_target_normalized * target_scale
             node_difference = node_prediction - node_target
-            raw_forward = output.raw_forward_world * target_scale
-            raw_reverse = output.raw_reverse_world * target_scale
-            totals["pair_abs"] += float(pair_difference.abs().sum().cpu())
-            totals["pair_square"] += float(pair_difference.square().sum().cpu())
             totals["node_abs"] += float(node_difference.abs().sum().cpu())
             totals["node_square"] += float(node_difference.square().sum().cpu())
-            totals["raw_forward_abs"] += float(
-                (raw_forward - pair_target).abs().sum().cpu()
-            )
-            totals["raw_reverse_abs"] += float(
-                (raw_reverse + pair_target).abs().sum().cpu()
-            )
-            even_leakage = 0.5 * (raw_forward + raw_reverse)
-            totals["even_abs"] += float(even_leakage.abs().sum().cpu())
-            totals["even_square"] += float(even_leakage.square().sum().cpu())
-            pair_components += pair_difference.numel()
             node_components += node_difference.numel()
             net = node_prediction.sum(dim=-2)
             max_net_force = max(
@@ -1158,34 +1012,16 @@ def _selected_y15_metrics(
             )
     model.train(was_training)
     return {
-        "pair_force": {
-            "mae": totals["pair_abs"] / pair_components,
-            "sae": totals["pair_abs"],
-            "rmse": math.sqrt(totals["pair_square"] / pair_components),
-            "normalized_mse": (
-                totals["pair_square"]
-                / pair_components
-                / (target_scale * target_scale)
-            ),
-            "component_count": pair_components,
-        },
-        "node_force_after_sum": {
+        "molecular_force": {
             "mae": totals["node_abs"] / node_components,
+            "sae": totals["node_abs"],
             "rmse": math.sqrt(totals["node_square"] / node_components),
-            "normalized_mse_using_pair_component_rms": (
+            "normalized_mse": (
                 totals["node_square"]
                 / node_components
                 / (target_scale * target_scale)
             ),
             "component_count": node_components,
-        },
-        "direction_audit": {
-            "raw_forward_mae": totals["raw_forward_abs"] / pair_components,
-            "raw_reverse_mae": totals["raw_reverse_abs"] / pair_components,
-            "even_leakage_mae": totals["even_abs"] / pair_components,
-            "even_leakage_rmse": math.sqrt(
-                totals["even_square"] / pair_components
-            ),
         },
         "maximum_net_force_component": max_net_force,
         "unit": "kcal_per_mol_per_angstrom",
@@ -1218,7 +1054,7 @@ def _selected_y15_symmetry_audit_v1(
         batch = next(iter(loader))
     except StopIteration as error:
         raise RuntimeError("Y15 test loader is empty") from error
-    centers, frames, _pair_target, _node_target = _move_batch(batch, device)
+    centers, frames, _node_target = _move_batch(batch, device)
     audit_count = min(4, int(centers.shape[0]))
     centers = centers[:audit_count]
     frames = frames[:audit_count]
@@ -1316,9 +1152,6 @@ def _selected_y15_symmetry_audit_v1(
                 )
             )
 
-            odd_definition = 0.5 * (
-                reference.raw_forward_world - reference.raw_reverse_world
-            )
             zero_net_force = torch.zeros_like(
                 reference.normalized_node_force_world.sum(dim=-2)
             )
@@ -1335,10 +1168,6 @@ def _selected_y15_symmetry_audit_v1(
             "node_permutation": _tensor_residual_v1(
                 permuted.normalized_node_force_world,
                 expected_permuted_node,
-            ),
-            "oddpair_definition": _tensor_residual_v1(
-                reference.normalized_pair_force_world,
-                odd_definition,
             ),
             "zero_total_force": _tensor_residual_v1(
                 reference.normalized_node_force_world.sum(dim=-2),
@@ -1362,9 +1191,8 @@ def _selected_y15_symmetry_audit_v1(
         model.train(was_training)
 
 
-def _run_y15_odd_graph_5b100k_v1(
+def _run_y15_odd_graph_5b100k_node_force_v2(
     csv_path: Path,
-    pair_npz_path: Path,
     output_directory: Path,
     device_value: str,
     comet_logger: Any,
@@ -1390,24 +1218,22 @@ def _run_y15_odd_graph_5b100k_v1(
         raise FileExistsError(summary_path)
     output_directory.mkdir(parents=True, exist_ok=True)
     source_sha = _source_sha256()
-    arrays = load_y15_arrays_v1(
+    arrays = load_y15_node_arrays_v2(
         csv_path,
-        pair_npz_path,
         expected_sample_count=spec.sample_count,
     )
     split = _deterministic_group_split(arrays.group_id, HISTORICAL_SPLIT_SEED)
     if split.counts() != {"train": 80_000, "validation": 10_000, "test": 10_000}:
         raise RuntimeError("Y15 formal split counts changed")
     target_scale = float(
-        np.sqrt(np.mean(np.square(arrays.pair_force_world[split.train])))
+        np.sqrt(np.mean(np.square(arrays.node_force_world[split.train])))
     )
     if not math.isfinite(target_scale) or target_scale <= 0.0:
         raise RuntimeError("Y15 target RMS is invalid")
     dataset = TensorDataset(
         torch.from_numpy(arrays.centers_world),
         torch.from_numpy(arrays.frames_body_to_world),
-        torch.from_numpy(arrays.pair_force_world / target_scale),
-        torch.from_numpy(arrays.node_force_world),
+        torch.from_numpy(arrays.node_force_world / target_scale),
     )
     pin_memory = device.type == "cuda"
     train_loader = _make_loader(
@@ -1458,7 +1284,7 @@ def _run_y15_odd_graph_5b100k_v1(
     comet_logger.log_config(
         study_config={
             "study_name": output_directory.parent.name,
-            "series": "Y13_Y15_pair_controls_v1",
+            "series": "Y13_Y15_node_force_control_v2",
             "experiment_id": "Y15",
             "data": dict(arrays.records),
             "source_sha256": source_sha,
@@ -1482,6 +1308,11 @@ def _run_y15_odd_graph_5b100k_v1(
             "shuffle_seed": HISTORICAL_SHUFFLE_SEED,
             "dtype": "float32",
             "enable_tf32_during_training": Y15_TF32,
+            "node_force_target_scale_component_rms": target_scale,
+            "training_supervision": "five_molecule_force_world",
+            "validation_target": "five_molecule_force_world",
+            "test_target": "five_molecule_force_world",
+            "pair_force_labels_loaded": False,
         },
     )
     pair_index = torch.from_numpy(arrays.pair_index).to(device)
@@ -1489,8 +1320,8 @@ def _run_y15_odd_graph_5b100k_v1(
     model.train()
     with torch.no_grad():
         for batch in warm_loader:
-            centers, frames, _pair_target, _node_target = _move_batch(batch, device)
-            model(centers, frames, pair_index)
+            centers, frames, _node_target = _move_batch(batch, device)
+            model.core_output(centers, frames, pair_index)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1503,13 +1334,13 @@ def _run_y15_odd_graph_5b100k_v1(
         gamma=Y15_SCHEDULER_GAMMA,
     )
     best_epoch = 0
-    best_validation = _evaluate_y15_loss(
+    best_validation = _evaluate_y15_node_force_loss_v2(
         model,
         validation_loader,
         pair_index,
         device,
     )
-    _save_y15_checkpoint(
+    _save_y15_node_force_checkpoint_v2(
         best_path,
         model,
         epoch=best_epoch,
@@ -1521,8 +1352,8 @@ def _run_y15_odd_graph_5b100k_v1(
         {
             "epoch": 0,
             "learning_rate": Y15_LEARNING_RATE,
-            "train_normalized_mse": "",
-            "validation_normalized_mse": best_validation,
+            "train_normalized_node_force_mse": "",
+            "validation_normalized_node_force_mse": best_validation,
             "epoch_duration_seconds": 0.0,
         }
     ]
@@ -1535,7 +1366,7 @@ def _run_y15_odd_graph_5b100k_v1(
             "epoch": 0,
             "epochs": spec.epochs,
             "best_epoch": 0,
-            "best_validation_normalized_mse": best_validation,
+            "best_validation_normalized_node_force_mse": best_validation,
         },
     )
 
@@ -1547,10 +1378,11 @@ def _run_y15_odd_graph_5b100k_v1(
         squared_sum = 0.0
         component_count = 0
         for batch in train_loader:
-            centers, frames, pair_target, _node_target = _move_batch(batch, device)
+            centers, frames, node_target = _move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            prediction = model(centers, frames, pair_index)
-            loss = torch.nn.functional.mse_loss(prediction, pair_target)
+            output = model.core_output(centers, frames, pair_index)
+            prediction = output.normalized_node_force_world
+            loss = torch.nn.functional.mse_loss(prediction, node_target)
             if not bool(torch.isfinite(loss)):
                 raise RuntimeError("Y15 training loss became nonfinite")
             loss.backward()
@@ -1569,12 +1401,12 @@ def _run_y15_odd_graph_5b100k_v1(
                         "Y15 encountered a missing or nonfinite gradient"
                     )
             optimizer.step()
-            difference = prediction.detach() - pair_target
+            difference = prediction.detach() - node_target
             squared_sum += float(difference.square().sum().cpu())
             component_count += difference.numel()
         scheduler.step()
         train_loss = squared_sum / component_count
-        validation_loss = _evaluate_y15_loss(
+        validation_loss = _evaluate_y15_node_force_loss_v2(
             model,
             validation_loader,
             pair_index,
@@ -1583,7 +1415,7 @@ def _run_y15_odd_graph_5b100k_v1(
         if validation_loss < best_validation:
             best_epoch = epoch
             best_validation = validation_loss
-            _save_y15_checkpoint(
+            _save_y15_node_force_checkpoint_v2(
                 best_path,
                 model,
                 epoch=epoch,
@@ -1595,8 +1427,8 @@ def _run_y15_odd_graph_5b100k_v1(
         row = {
             "epoch": epoch,
             "learning_rate": learning_rate,
-            "train_normalized_mse": train_loss,
-            "validation_normalized_mse": validation_loss,
+            "train_normalized_node_force_mse": train_loss,
+            "validation_normalized_node_force_mse": validation_loss,
             "epoch_duration_seconds": epoch_duration,
         }
         history.append(row)
@@ -1609,7 +1441,7 @@ def _run_y15_odd_graph_5b100k_v1(
                 "epoch": epoch,
                 "epochs": spec.epochs,
                 "best_epoch": best_epoch,
-                "best_validation_normalized_mse": best_validation,
+                "best_validation_normalized_node_force_mse": best_validation,
             },
         )
         comet_logger.log_epoch(
@@ -1622,12 +1454,12 @@ def _run_y15_odd_graph_5b100k_v1(
         _update_strict_comet_epoch_record(output_directory / "comet.json", epoch)
         print(json.dumps({"experiment_id": "Y15", **row}), flush=True)
 
-    selected = _restore_y15_checkpoint(
+    selected = _restore_y15_node_force_checkpoint_v2(
         best_path,
         model,
         source_sha256=source_sha,
     )
-    selected_metrics = _selected_y15_metrics(
+    selected_metrics = _selected_y15_node_force_metrics_v2(
         model,
         test_loader,
         pair_index,
@@ -1648,8 +1480,8 @@ def _run_y15_odd_graph_5b100k_v1(
     if global_step != optimizer_updates:
         raise RuntimeError("Y15 optimizer update count changed")
     summary = {
-        "schema_name": "tfenn_y15_e311_odd_graph_result",
-        "schema_version": 1,
+        "schema_name": "tfenn_y15_e311_odd_graph_node_force_result",
+        "schema_version": 2,
         "status": "complete",
         "experiment": spec.as_dict(),
         "model": {
@@ -1668,7 +1500,11 @@ def _run_y15_odd_graph_5b100k_v1(
             "scheduler": "StepLR",
             "scheduler_step_size": spec.scheduler_step_size,
             "scheduler_gamma": Y15_SCHEDULER_GAMMA,
-            "target_scale_component_rms": target_scale,
+            "node_force_target_scale_component_rms": target_scale,
+            "training_supervision": "five_molecule_force_world",
+            "validation_target": "five_molecule_force_world",
+            "test_target": "five_molecule_force_world",
+            "pair_force_labels_loaded": False,
             "dtype": "float32",
             "enable_tf32_during_training": Y15_TF32,
             "torch_threads": 4,
@@ -1676,9 +1512,7 @@ def _run_y15_odd_graph_5b100k_v1(
             "model_seed": HISTORICAL_MODEL_SEED,
             "shuffle_seed": HISTORICAL_SHUFFLE_SEED,
             "optimizer_updates": optimizer_updates,
-            "train_unordered_edge_exposures": (
-                spec.epochs * train_graphs * spec.unordered_edge_count
-            ),
+            "train_graph_exposures": spec.epochs * train_graphs,
             "train_ordered_kernel_evaluations": (
                 2 * spec.epochs * train_graphs * spec.unordered_edge_count
             ),
@@ -1686,10 +1520,10 @@ def _run_y15_odd_graph_5b100k_v1(
         },
         "split": split.counts(),
         "selected_checkpoint": {
-            "rule": "minimum validation normalized pair MSE",
+            "rule": "minimum validation normalized molecular force MSE",
             "best_epoch": int(selected["epoch"]),
-            "best_validation_normalized_mse": float(
-                selected["validation_normalized_mse"]
+            "best_validation_normalized_node_force_mse": float(
+                selected["validation_normalized_node_force_mse"]
             ),
             "test_metrics_evaluated_once": True,
             "symmetry_audit_reuses_four_unlabeled_test_geometries": True,
@@ -1713,8 +1547,8 @@ def _run_y15_odd_graph_5b100k_v1(
     comet_logger.log_final(
         metrics={
             "test": {
-                "mae": selected_metrics["pair_force"]["mae"],
-                "sae": selected_metrics["pair_force"]["sae"],
+                "mae": selected_metrics["molecular_force"]["mae"],
+                "sae": selected_metrics["molecular_force"]["sae"],
             }
         },
         relative_force_norm_stats={},
@@ -1729,16 +1563,15 @@ def _run_y15_odd_graph_5b100k_v1(
             "experiment_id": "Y15",
             "epoch": spec.epochs,
             "best_epoch": best_epoch,
-            "best_validation_normalized_mse": best_validation,
+            "best_validation_normalized_node_force_mse": best_validation,
             "completed_at_utc": _utc_now(),
         },
     )
     return summary_path
 
 
-def run_y15_odd_graph_5b100k_v1(
+def run_y15_odd_graph_5b100k_node_force_v2(
     csv_path: Path,
-    pair_npz_path: Path,
     output_directory: Path,
     device_value: str,
     comet_project: str = DEFAULT_COMET_PROJECT,
@@ -1760,7 +1593,7 @@ def run_y15_odd_graph_5b100k_v1(
         raise FileExistsError(summary_path)
     output_directory.mkdir(parents=True, exist_ok=True)
     experiment_name = _resolved_experiment_name(
-        "Y15_E311_OddGraph_5B100K",
+        "Y15_E311_OddGraph_5B100K_NodeForce",
         control_spec,
         resolved_epochs,
         resolved_batch_size,
@@ -1778,9 +1611,8 @@ def run_y15_odd_graph_5b100k_v1(
             ).project_name,
             workspace=comet_workspace,
         )
-        return _run_y15_odd_graph_5b100k_v1(
+        return _run_y15_odd_graph_5b100k_node_force_v2(
             csv_path,
-            pair_npz_path,
             output_directory,
             device_value,
             logger,
@@ -1849,13 +1681,12 @@ def build_argument_parser_v1() -> argparse.ArgumentParser:
     )
     y14.add_argument("--device", default="cuda")
 
-    y15 = commands.add_parser("y15", help="five-node E311 OddGraph control")
+    y15 = commands.add_parser("y15", help="five molecule force E311 OddGraph")
     y15.add_argument("--csv", type=Path, required=True)
-    y15.add_argument("--pair-npz", type=Path, required=True)
     y15.add_argument(
         "--output-directory",
         type=Path,
-        default=DEFAULT_OUTPUT_ROOT / "Y15_e311_odd_graph_5b100k",
+        default=DEFAULT_OUTPUT_ROOT / "Y15_e311_odd_graph_5b100k_node_force",
     )
     y15.add_argument("--device", default="cuda")
     for command in (y13, y14, y15):
@@ -1889,9 +1720,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             batch_size=arguments.batch_size,
         )
     else:
-        result = run_y15_odd_graph_5b100k_v1(
+        result = run_y15_odd_graph_5b100k_node_force_v2(
             arguments.csv,
-            arguments.pair_npz,
             arguments.output_directory,
             arguments.device,
             arguments.comet_project,
@@ -1910,11 +1740,11 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_COMET_PROJECT",
     "SplitIndicesV1",
-    "Y15ArraysV1",
+    "Y15NodeArraysV2",
     "build_argument_parser_v1",
-    "load_y15_arrays_v1",
+    "load_y15_node_arrays_v2",
     "main",
     "run_y13_exact_reproduction_v1",
     "run_y14_odd_graph_400k_v1",
-    "run_y15_odd_graph_5b100k_v1",
+    "run_y15_odd_graph_5b100k_node_force_v2",
 ]

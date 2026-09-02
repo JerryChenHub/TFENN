@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -12,16 +14,25 @@ from experiments.gnn.e311_y13_y15_pair_control_core_v1 import (
 )
 from experiments.gnn.e311_y13_y15_pair_control_runner_v1 import (
     DEFAULT_COMET_PROJECT,
+    Y15NodeArraysV2,
     _StrictYSeriesCometAdapter,
     _deterministic_group_split,
+    _evaluate_y15_node_force_loss_v2,
     _formal_comet_config,
-    _numpy_signed_scatter,
     _resolve_training_protocol,
     _resolved_experiment_name,
-    _selected_y15_metrics,
+    _restore_y15_node_force_checkpoint_v2,
+    _save_y15_node_force_checkpoint_v2,
+    _selected_y15_node_force_metrics_v2,
     _update_strict_comet_epoch_record,
     build_argument_parser_v1,
 )
+
+
+def test_y15_node_arrays_have_no_pair_force_label() -> None:
+    names = {field.name for field in fields(Y15NodeArraysV2)}
+    assert "node_force_world" in names
+    assert "pair_force_world" not in names
 
 
 def test_y15_split_occurs_at_configuration_level() -> None:
@@ -34,13 +45,6 @@ def test_y15_split_occurs_at_configuration_level() -> None:
     assert not train_groups & validation_groups
     assert not train_groups & test_groups
     assert not validation_groups & test_groups
-
-
-def test_pair_target_contract_reaggregates_with_zero_total_force() -> None:
-    pair_index = complete_pair_index_v1(5).cpu().numpy()
-    pair_force = np.arange(60, dtype=np.float64).reshape(2, 10, 3)
-    node_force = _numpy_signed_scatter(pair_force, pair_index, 5)
-    np.testing.assert_array_equal(node_force.sum(axis=1), np.zeros((2, 3)))
 
 
 def test_cli_has_three_separate_experiment_commands(tmp_path) -> None:
@@ -76,8 +80,6 @@ def test_cli_has_three_separate_experiment_commands(tmp_path) -> None:
             "y15",
             "--csv",
             str(tmp_path / "five.csv"),
-            "--pair-npz",
-            str(tmp_path / "five_pair.npz"),
             "--output-directory",
             str(tmp_path / "y15"),
             "--device",
@@ -93,6 +95,7 @@ def test_cli_has_three_separate_experiment_commands(tmp_path) -> None:
     assert y13.batch_size == 512
     assert y14.epochs is None
     assert y15.batch_size is None
+    assert not hasattr(y15, "pair_npz")
 
 
 def test_repeat_protocol_changes_only_epochs_and_batch_size() -> None:
@@ -206,7 +209,53 @@ def test_strict_comet_epoch_record_advances_atomically(tmp_path) -> None:
     assert json.loads(path.read_text(encoding="utf_8"))["last_logged_epoch"] == 1
 
 
-def test_y15_pair_sae_matches_mae_times_component_count() -> None:
+def test_y15_validation_uses_only_molecular_force_output() -> None:
+    class ZeroModel:
+        training = True
+
+        def __call__(self, *args: object, **kwargs: object) -> torch.Tensor:
+            del args, kwargs
+            raise AssertionError("Y15 validation must not call pair output forward")
+
+        def eval(self) -> None:
+            self.training = False
+
+        def train(self, mode: bool = True) -> None:
+            self.training = mode
+
+        def core_output(
+            self,
+            centers: torch.Tensor,
+            frames: torch.Tensor,
+            pair_index: torch.Tensor,
+        ) -> SimpleNamespace:
+            del frames
+            pair_shape = (centers.shape[0], pair_index.numel() // 2, 3)
+            return SimpleNamespace(
+                normalized_pair_force_world=torch.full(pair_shape, torch.nan),
+                normalized_node_force_world=torch.zeros_like(centers),
+                raw_forward_world=torch.full(pair_shape, torch.nan),
+                raw_reverse_world=torch.full(pair_shape, torch.nan),
+            )
+
+    sample_count = 2
+    centers = torch.zeros((sample_count, 5, 3))
+    frames = torch.eye(3).expand(sample_count, 5, 3, 3).clone()
+    node_target = torch.ones((sample_count, 5, 3))
+    loader = DataLoader(
+        TensorDataset(centers, frames, node_target),
+        batch_size=sample_count,
+    )
+    loss = _evaluate_y15_node_force_loss_v2(
+        ZeroModel(),
+        loader,
+        complete_pair_index_v1(5),
+        torch.device("cpu"),
+    )
+    assert loss == 1.0
+
+
+def test_y15_molecular_force_sae_matches_mae_times_component_count() -> None:
     class ZeroModel:
         training = True
 
@@ -225,29 +274,66 @@ def test_y15_pair_sae_matches_mae_times_component_count() -> None:
             del frames
             pair_shape = (centers.shape[0], pair_index.numel() // 2, 3)
             return SimpleNamespace(
-                normalized_pair_force_world=torch.zeros(pair_shape),
+                normalized_pair_force_world=torch.full(pair_shape, torch.nan),
                 normalized_node_force_world=torch.zeros_like(centers),
-                raw_forward_world=torch.zeros(pair_shape),
-                raw_reverse_world=torch.zeros(pair_shape),
+                raw_forward_world=torch.full(pair_shape, torch.nan),
+                raw_reverse_world=torch.full(pair_shape, torch.nan),
             )
 
     sample_count = 2
     centers = torch.zeros((sample_count, 5, 3))
     frames = torch.eye(3).expand(sample_count, 5, 3, 3).clone()
-    pair_target = torch.ones((sample_count, 10, 3))
-    node_target = torch.zeros((sample_count, 5, 3))
+    node_target = torch.ones((sample_count, 5, 3))
     loader = DataLoader(
-        TensorDataset(centers, frames, pair_target, node_target),
+        TensorDataset(centers, frames, node_target),
         batch_size=sample_count,
     )
-    metrics = _selected_y15_metrics(
+    metrics = _selected_y15_node_force_metrics_v2(
         ZeroModel(),
         loader,
         complete_pair_index_v1(5),
         torch.device("cpu"),
         target_scale=2.0,
     )
-    pair = metrics["pair_force"]
-    assert pair["component_count"] == 60
-    assert pair["mae"] == 2.0
-    assert pair["sae"] == pair["mae"] * pair["component_count"]
+    molecular = metrics["molecular_force"]
+    assert molecular["component_count"] == 30
+    assert molecular["mae"] == 2.0
+    assert molecular["sae"] == molecular["mae"] * molecular["component_count"]
+    assert "pair_force" not in metrics
+
+
+def test_y15_checkpoint_schema_locks_node_force_selection(tmp_path) -> None:
+    path = tmp_path / "best.pt"
+    model = torch.nn.Linear(2, 1)
+    _save_y15_node_force_checkpoint_v2(
+        path,
+        model,
+        epoch=7,
+        validation_loss=0.125,
+        target_scale=0.75,
+        source_sha256="1" * 64,
+    )
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert payload["schema_name"] == "tfenn_y15_node_force_selected_checkpoint"
+    assert payload["schema_version"] == 2
+    assert payload["validation_normalized_node_force_mse"] == 0.125
+    assert payload["node_force_target_scale_component_rms"] == 0.75
+    assert "validation_normalized_mse" not in payload
+
+
+def test_y15_restore_rejects_legacy_pair_checkpoint(tmp_path) -> None:
+    path = tmp_path / "legacy.pt"
+    torch.save(
+        {
+            "schema_name": "tfenn_y15_selected_checkpoint",
+            "schema_version": 1,
+            "source_sha256": "1" * 64,
+        },
+        path,
+    )
+    with pytest.raises(RuntimeError, match="node force supervision"):
+        _restore_y15_node_force_checkpoint_v2(
+            path,
+            torch.nn.Linear(2, 1),
+            source_sha256="1" * 64,
+        )

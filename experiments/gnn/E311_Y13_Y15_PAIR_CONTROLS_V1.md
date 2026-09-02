@@ -1,4 +1,4 @@
-# Y13--Y15 exact-E311 pair controls
+# Y13 to Y15 E311 controls
 
 These experiments isolate the point at which the historical E311 accuracy is
 lost. They do not use the newer receiver-local multibody MessageBlock and do
@@ -8,7 +8,7 @@ not add paths, Gate width, hidden node state, or trainable graph parameters.
 |---|---|---|---|
 | Y13 | E311-Exact-400K; historical two-benzene shards | Reproduce the non-GNN E311 reference without reimplementing it | 500 epochs, 10k batch, 16k updates, 160M train-pair exposures |
 | Y14 | E311-OddGraph-400K; same data and split as Y13 | Measure two-direction evaluation, endpoint OddPair, and signed scatter | Same optimizer, split, epochs, effective batch, updates, and train-pair exposures as Y13 |
-| Y15 | E311-OddGraph-5B100K; 10 complete-graph edges per configuration | Test the same strictly pairwise graph strategy on five benzene | 200 epochs, 1k graphs per batch, 16k updates, 160M train-pair exposures |
+| Y15 | E311-OddGraph-5B100K; molecular force supervision on five nodes | Test the graph output forces on five benzene without pair force labels | Current repeat uses 1000 epochs, 512 graphs per batch, 157k updates |
 
 All models have exactly 14,926 trainable parameters. Y14 and Y15 evaluate the
 same E311 kernel on both endpoint orders in one vectorized call:
@@ -53,20 +53,19 @@ the shared E-series split.
 Y15 requires:
 
 - the validated 100k five-benzene CSV;
-- a sibling validated pair-force NPZ with sample_id, canonical pair_index of
-  shape (10, 2), and pair_force_kcal_mol_A of shape (100000, 10, 3);
-- 100k independently generated configurations. Formal Y15 rejects trajectory
-  grouping and requires group_id to equal sample_id when group_id is present.
+- 100k independently generated configurations with five complete molecule rows
+  per sample.
 
-The runner rejects the data unless signed aggregation of the ten pair labels
-reconstructs every CSV node force within \(10^{-9}\). It splits configurations
-before exposing their edges, preventing edge leakage between train,
-validation, and test.
+The runner reads no pair force artifact. It assigns one independent group to
+each CSV configuration and splits complete configurations, preventing molecule
+leakage between train, validation, and test.
 
-Y15 trains on pair-force MSE. Its pair MAE uses the same metric and units as
-E311, but cross-dataset numerical comparison is descriptive unless the pair
-geometry and target distributions match. Summed node MAE is secondary and is
-not directly comparable to the single-pair 0.0018 result.
+Y15 trains on normalized molecular force MSE over all five nodes and all three
+force components. Validation uses the same molecular force loss and selects the
+best checkpoint. Final test MAE and SAE are computed only from the five
+molecular output forces in physical units. The graph still computes internal
+edge messages before signed aggregation, but they are neither labels nor
+reported performance metrics.
 
 ## Commands
 
@@ -86,21 +85,23 @@ locked hyperparameters.
 
     python -m experiments.gnn.e311_y13_y15_pair_control_runner_v1 y15 \
       --csv PATH/TO/five_benzene_100k.csv \
-      --pair-npz PATH/TO/five_benzene_100k_pair_forces.npz \
-      --output-directory experiments/gnn/runs/e311_y13_y15_pair_controls_v1/Y15_e311_odd_graph_5b100k \
+      --output-directory experiments/gnn/runs/e311_y13_y15_pair_controls_v1/Y15_e311_odd_graph_5b100k_node_force \
+      --epochs 1000 \
+      --batch-size 512 \
       --device cuda
 
 Y13 uses the historical E series preparation, config, enriched E311 spec,
 model builder, and common trainer directly. It asserts that preflight compiled
 E311 with exactly 14,926 parameters. Y14 uses the historical common trainer
 and best validation checkpoint rule. Y15 also loads
-the best-validation checkpoint before its one-time test evaluation. The Y15
+the best molecular force validation checkpoint before its one-time test evaluation. The Y15
 selected-model audit then checks global rotation/translation covariance,
-independent molecular D6 gauges, node permutation, OddPair identity, and zero
+independent molecular D6 gauges, node permutation, and zero
 total force with TF32 disabled.
 
-Y14 and Y15 materialize 20,000 directed pair inputs in a formal training batch
-(10k two-benzene examples for Y14; 1k graphs times 20 directions for Y15).
+Y14 materializes 20,000 directed pair inputs in its formal training batch.
+The current Y15 repeat materializes 10,240 internal directed edge messages per
+batch from 512 graphs and 20 directions per graph.
 Run a one-batch CUDA memory smoke test before committing a long formal run.
 
 ## Interpretation boundary

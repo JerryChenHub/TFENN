@@ -376,6 +376,7 @@ class E311OddGraphCoreV1(nn.Module):
             "ordered_evaluations_share_one_runtime_call": True,
             "odd_projection_frame": "world",
             "aggregation": "signed_sum",
+            "forward_output": "normalized_node_force_world",
             "uses_receiver_local_multibody_message_block": False,
             "has_hidden_node_state": False,
         }
@@ -465,13 +466,13 @@ class E311OddGraphCoreV1(nn.Module):
         frames_body_to_world: Tensor,
         pair_index: Tensor | None = None,
     ) -> Tensor:
-        """Return normalized pair forces; core_output also exposes node forces."""
+        """Return the normalized molecular force at every graph node."""
 
         return self.core_output(
             centers_world,
             frames_body_to_world,
             pair_index,
-        ).normalized_pair_force_world
+        ).normalized_node_force_world
 
 
 class E311TwoNodeOddControlV1(nn.Module):
@@ -504,7 +505,9 @@ class E311TwoNodeOddControlV1(nn.Module):
 
     @property
     def architecture_metadata(self) -> Mapping[str, Any]:
-        return self.graph_core.architecture_metadata
+        metadata = dict(self.graph_core.architecture_metadata)
+        metadata["forward_output"] = "normalized_pair_force_world_endpoint_zero"
+        return metadata
 
     def reset_normalization_stats(self) -> None:
         self.graph_core.reset_normalization_stats()
